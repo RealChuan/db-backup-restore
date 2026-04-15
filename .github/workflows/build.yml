@@ -1,0 +1,41 @@
+name: Build and Package
+
+on:
+  push:
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - "**/*.txt"
+      - "**/.gitignore"
+      - "**/LICENSE*"
+  pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - "**/*.txt"
+      - "**/.gitignore"
+      - "**/LICENSE*"
+
+jobs:
+  build:
+    name: Build and Package
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-go@v6
+
+      - name: Build project
+        shell: bash
+        run: |
+          chmod +x ./scripts/build.sh
+          ./scripts/build.sh
+
+      - name: Upload bin folder
+        uses: actions/upload-artifact@v7
+        with:
+          name: database-backup-bin
+          path: bin/
