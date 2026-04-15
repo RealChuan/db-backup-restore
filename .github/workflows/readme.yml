@@ -8,6 +8,9 @@ on:
     paths:
       - README.md
 
+permissions:
+  contents: write
+
 jobs:
   Translate:
     runs-on: ubuntu-latest

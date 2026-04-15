@@ -5,5 +5,5 @@
 
 ## 支持的数据库类型
 
-- Oracle 数据库
-- MSSQL 数据库
+- Oracle Database 19c
+- Microsoft SQL Server 2025
