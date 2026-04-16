@@ -113,6 +113,9 @@ type DatabaseBackup interface {
 	// DeleteInvalidBackups 删除无效的备份记录
 	DeleteInvalidBackups(ctx context.Context) error
 
+	// DeleteAllBackups 删除所有备份
+	DeleteAllBackups(ctx context.Context) error
+
 	// Close 释放资源（如数据库连接）
 	Close() error
 }

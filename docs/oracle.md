@@ -4,7 +4,67 @@
 
 ---
 
+## 📋 目录
+
+- [Oracle 数据库备份与还原命令手册](#oracle-数据库备份与还原命令手册)
+  - [📋 目录](#-目录)
+  - [1. 归档模式（ARCHIVELOG）管理](#1-归档模式archivelog管理)
+    - [1.1 查看当前归档状态](#11-查看当前归档状态)
+    - [1.2 启用归档模式](#12-启用归档模式)
+    - [1.3 禁用归档模式](#13-禁用归档模式)
+  - [2. RMAN 备份命令](#2-rman-备份命令)
+    - [2.1 全量备份](#21-全量备份)
+    - [2.2 增量备份](#22-增量备份)
+    - [2.3 差异备份](#23-差异备份)
+    - [2.4 并行备份](#24-并行备份)
+    - [2.5 压缩备份](#25-压缩备份)
+    - [2.6 加密备份](#26-加密备份)
+  - [3. RMAN 还原命令](#3-rman-还原命令)
+    - [3.1 还原到最新完整备份（默认）](#31-还原到最新完整备份默认)
+    - [3.2 按时间点还原（Point-in-Time）](#32-按时间点还原point-in-time)
+    - [3.3 按备份标签还原](#33-按备份标签还原)
+    - [3.4 还原控制文件丢失场景](#34-还原控制文件丢失场景)
+    - [3.5 异机还原](#35-异机还原)
+  - [4. 备份管理命令](#4-备份管理命令)
+    - [4.1 列出所有备份](#41-列出所有备份)
+    - [4.2 查看备份详细信息](#42-查看备份详细信息)
+    - [4.3 删除指定备份集](#43-删除指定备份集)
+    - [4.4 删除早于指定时间的备份](#44-删除早于指定时间的备份)
+    - [4.5 删除过期备份](#45-删除过期备份)
+    - [4.6 验证备份有效性](#46-验证备份有效性)
+    - [4.7 交叉核对备份](#47-交叉核对备份)
+    - [4.8 备份目录库管理](#48-备份目录库管理)
+      - [4.8.1 注册备份到目录库](#481-注册备份到目录库)
+      - [4.8.2 从目录库中移除备份记录](#482-从目录库中移除备份记录)
+      - [4.8.3 检查备份状态并更新目录库](#483-检查备份状态并更新目录库)
+      - [4.8.4 删除无效的备份记录](#484-删除无效的备份记录)
+      - [4.8.5 删除所有备份](#485-删除所有备份)
+  - [5. Go 代码与底层命令映射](#5-go-代码与底层命令映射)
+  - [6. 常用辅助查询](#6-常用辅助查询)
+    - [6.1 检查数据库是否处于归档模式](#61-检查数据库是否处于归档模式)
+    - [6.2 查看归档日志位置](#62-查看归档日志位置)
+    - [6.3 强制切换日志并归档](#63-强制切换日志并归档)
+    - [6.4 查看备份集信息（SQL）](#64-查看备份集信息sql)
+  - [7. 典型故障处理](#7-典型故障处理)
+    - [7.1 恢复时提示归档日志缺失](#71-恢复时提示归档日志缺失)
+    - [7.2 数据库无法打开，提示需要介质恢复](#72-数据库无法打开提示需要介质恢复)
+    - [7.3 数据文件损坏，单独恢复](#73-数据文件损坏单独恢复)
+  - [8. 异机恢复指南](#8-异机恢复指南)
+    - [8.1 前提条件](#81-前提条件)
+    - [8.2 恢复步骤](#82-恢复步骤)
+    - [8.3 命令示例](#83-命令示例)
+      - [注册备份](#注册备份)
+      - [验证备份状态](#验证备份状态)
+      - [还原控制文件](#还原控制文件)
+      - [还原和恢复数据库](#还原和恢复数据库)
+    - [8.4 注意事项](#84-注意事项)
+  - [9. 安全建议](#9-安全建议)
+
+---
+
 ## 1. 归档模式（ARCHIVELOG）管理
+
+归档模式是 Oracle 数据库进行热备份的前提条件。在归档模式下，数据库会将重做日志文件归档保存，从而支持时间点恢复。
 
 ### 1.1 查看当前归档状态
 
@@ -16,9 +76,14 @@ ARCHIVE LOG LIST;
 SELECT LOG_MODE FROM V$DATABASE;
 ```
 
+**输出说明**：
+
+- `ARCHIVELOG`：数据库处于归档模式
+- `NOARCHIVELOG`：数据库处于非归档模式
+
 ### 1.2 启用归档模式
 
-**前提**：数据库需以 `SYSDBA` 身份登录，且处于 `MOUNT` 状态。
+**前提条件**：数据库需以 `SYSDBA` 身份登录，且处于 `MOUNT` 状态。
 
 ```sql
 SHUTDOWN IMMEDIATE;
@@ -29,9 +94,11 @@ ALTER SYSTEM SET LOG_ARCHIVE_DEST_1='LOCATION=/u01/archivelog' SCOPE=BOTH;
 ALTER DATABASE OPEN;
 ```
 
-> **Windows 路径示例**：`LOCATION=D:\archivelog`
+**Windows 路径示例**：`LOCATION=D:\archivelog`
 
-### 1.3 禁用归档模式（不推荐生产环境）
+### 1.3 禁用归档模式
+
+> **⚠️ 警告**：禁用归档模式会限制恢复能力，不推荐在生产环境使用。
 
 ```sql
 SHUTDOWN IMMEDIATE;
@@ -46,7 +113,7 @@ ALTER DATABASE OPEN;
 
 所有备份命令要求数据库处于 **ARCHIVELOG** 模式。
 
-### 2.1 全量备份（BackupFull）
+### 2.1 全量备份
 
 ```rman
 RUN {
@@ -59,7 +126,7 @@ RUN {
 DELETE NOPROMPT OBSOLETE;
 ```
 
-### 2.2 增量备份（BackupIncremental）
+### 2.2 增量备份
 
 ```rman
 RUN {
@@ -72,7 +139,7 @@ RUN {
 DELETE NOPROMPT OBSOLETE;
 ```
 
-### 2.3 差异备份（BackupDifferential）
+### 2.3 差异备份
 
 在 Oracle 中，差异备份使用 `CUMULATIVE` 关键字：
 
@@ -87,7 +154,7 @@ RUN {
 DELETE NOPROMPT OBSOLETE;
 ```
 
-### 2.4 并行备份（Parallelism > 1）
+### 2.4 并行备份
 
 ```rman
 RUN {
@@ -169,7 +236,7 @@ RUN {
 }
 ```
 
-### 3.4 还原控制文件丢失的场景
+### 3.4 还原控制文件丢失场景
 
 ```rman
 STARTUP NOMOUNT;
@@ -180,7 +247,7 @@ RECOVER DATABASE;
 ALTER DATABASE OPEN RESETLOGS;
 ```
 
-### 3.5 还原到异机（DUPLICATE）
+### 3.5 异机还原
 
 ```rman
 DUPLICATE TARGET DATABASE TO newdb
@@ -204,7 +271,8 @@ DUPLICATE TARGET DATABASE TO newdb
 LIST BACKUP SUMMARY;
 ```
 
-输出示例：
+**输出示例**：
+
 ```
 BS Key  Type LV Size     Device Type Completion Time
 ------- ---- -- -------- ----------- -------------------
@@ -226,13 +294,13 @@ LIST BACKUP OF CONTROLFILE;
 DELETE NOPROMPT BACKUPSET 123;
 ```
 
-### 4.4 删除完成时间早于某时间点的所有备份
+### 4.4 删除早于指定时间的备份
 
 ```rman
 DELETE NOPROMPT BACKUP COMPLETED BEFORE "TO_DATE('2026-04-01 00:00:00', 'YYYY-MM-DD HH24:MI:SS')";
 ```
 
-### 4.5 删除过期备份（根据保留策略）
+### 4.5 删除过期备份
 
 ```rman
 DELETE NOPROMPT OBSOLETE;
@@ -248,7 +316,9 @@ RESTORE DATABASE VALIDATE CHECK LOGICAL;
 VALIDATE BACKUPSET 123;
 ```
 
-### 4.7 交叉核对备份（检查备份文件是否物理存在）
+### 4.7 交叉核对备份
+
+检查备份文件是否物理存在：
 
 ```rman
 CROSSCHECK BACKUP;
@@ -280,31 +350,38 @@ CROSSCHECK BACKUP;
 DELETE NOPROMPT EXPIRED BACKUP;
 ```
 
+#### 4.8.5 删除所有备份
+
+```rman
+DELETE NOPROMPT BACKUP;
+```
+
 ---
 
-## 5. 备份与还原的 Go 代码映射
+## 5. Go 代码与底层命令映射
 
 > **🔗 代码映射指南**
 >
 > 本部分列出了 `OracleBackup` 实现中的 Go 方法与底层 RMAN/SQL 命令的对应关系。
 
-| Go 方法 | 对应的底层命令 |
-|---------|----------------|
+| Go 方法                           | 对应的底层命令                                                                           |
+| --------------------------------- | ---------------------------------------------------------------------------------------- |
 | `EnableArchiveLogMode(ctx, dest)` | `SHUTDOWN IMMEDIATE; STARTUP MOUNT; ALTER DATABASE ARCHIVELOG; ... ALTER DATABASE OPEN;` |
-| `Backup(BackupFull)` | `BACKUP DATABASE PLUS ARCHIVELOG DELETE INPUT;` |
-| `Backup(BackupIncremental)` | `BACKUP INCREMENTAL LEVEL 1 DATABASE PLUS ARCHIVELOG DELETE INPUT;` |
-| `Backup(BackupDifferential)` | `BACKUP INCREMENTAL LEVEL 1 CUMULATIVE DATABASE PLUS ARCHIVELOG DELETE INPUT;` |
-| `Restore(PointInTime)` | `SET UNTIL TIME ...; RESTORE DATABASE; RECOVER DATABASE; ALTER DATABASE OPEN RESETLOGS;` |
-| `Restore(BackupTag)` | `RESTORE DATABASE FROM TAG='<tag>'; RECOVER DATABASE; ALTER DATABASE OPEN;` |
-| `ListBackups()` | `LIST BACKUP SUMMARY;`（解析输出） |
-| `DeleteBackup(backupID)` | `DELETE NOPROMPT BACKUPSET <id>;` |
-| `DeleteBackup(timeRFC3339)` | `DELETE NOPROMPT BACKUP COMPLETED BEFORE TO_DATE(...);` |
-| `ValidateBackup(backupID)` | `VALIDATE BACKUPSET <id>;` 或 `RESTORE DATABASE VALIDATE CHECK LOGICAL;` |
-| `GetBackupInfo(backupID)` | `LIST BACKUPSET <id>;` 或 `LIST BACKUP OF DATABASE SUMMARY;` |
-| `RegisterBackup(backupPath)` | `CATALOG START WITH '<backupPath>';` |
-| `UnregisterBackup(backupID)` | `CHANGE BACKUPSET <id> UNCATALOG;` |
-| `VerifyBackupStatus()` | `CROSSCHECK BACKUP;` |
-| `DeleteInvalidBackups()` | `DELETE NOPROMPT EXPIRED BACKUP;` |
+| `Backup(BackupFull)`              | `BACKUP DATABASE PLUS ARCHIVELOG DELETE INPUT;`                                          |
+| `Backup(BackupIncremental)`       | `BACKUP INCREMENTAL LEVEL 1 DATABASE PLUS ARCHIVELOG DELETE INPUT;`                      |
+| `Backup(BackupDifferential)`      | `BACKUP INCREMENTAL LEVEL 1 CUMULATIVE DATABASE PLUS ARCHIVELOG DELETE INPUT;`           |
+| `Restore(PointInTime)`            | `SET UNTIL TIME ...; RESTORE DATABASE; RECOVER DATABASE; ALTER DATABASE OPEN RESETLOGS;` |
+| `Restore(BackupTag)`              | `RESTORE DATABASE FROM TAG='<tag>'; RECOVER DATABASE; ALTER DATABASE OPEN;`              |
+| `ListBackups()`                   | `LIST BACKUP SUMMARY;`（解析输出）                                                       |
+| `DeleteBackup(backupID)`          | `DELETE NOPROMPT BACKUPSET <id>;`                                                        |
+| `DeleteBackup(timeRFC3339)`       | `DELETE NOPROMPT BACKUP COMPLETED BEFORE TO_DATE(...);`                                  |
+| `ValidateBackup(backupID)`        | `VALIDATE BACKUPSET <id>;` 或 `RESTORE DATABASE VALIDATE CHECK LOGICAL;`                 |
+| `GetBackupInfo(backupID)`         | `LIST BACKUPSET <id>;` 或 `LIST BACKUP OF DATABASE SUMMARY;`                             |
+| `RegisterBackup(backupPath)`      | `CATALOG START WITH '<backupPath>';`                                                     |
+| `UnregisterBackup(backupID)`      | `CHANGE BACKUPSET <id> UNCATALOG;`                                                       |
+| `VerifyBackupStatus()`            | `CROSSCHECK BACKUP;`                                                                     |
+| `DeleteInvalidBackups()`          | `DELETE NOPROMPT EXPIRED BACKUP;`                                                        |
+| `DeleteAllBackups()`              | `DELETE NOPROMPT BACKUP;`                                                                |
 
 ---
 
@@ -336,14 +413,14 @@ ALTER SYSTEM ARCHIVE LOG CURRENT;
 ### 6.4 查看备份集信息（SQL）
 
 ```sql
-SELECT BS_KEY, BACKUP_TYPE, START_TIME, COMPLETION_TIME, STATUS 
-FROM V$BACKUP_SET 
+SELECT BS_KEY, BACKUP_TYPE, START_TIME, COMPLETION_TIME, STATUS
+FROM V$BACKUP_SET
 ORDER BY COMPLETION_TIME DESC;
 ```
 
 ---
 
-## 7. 典型故障处理命令
+## 7. 典型故障处理
 
 > **🛠️ 故障处理指南**
 >
@@ -352,7 +429,6 @@ ORDER BY COMPLETION_TIME DESC;
 ### 7.1 恢复时提示归档日志缺失
 
 ```rman
--- 取消恢复，改为不完全恢复到缺失点之前
 RUN {
   SET UNTIL TIME "TO_DATE('2026-04-03 15:00:00', 'YYYY-MM-DD HH24:MI:SS')";
   RESTORE DATABASE;
@@ -380,13 +456,13 @@ SQL "ALTER DATABASE DATAFILE 4 ONLINE";
 
 ---
 
-## 8. 异机恢复
+## 8. 异机恢复指南
 
 > **📋 异机恢复指南**
 >
 > 异机恢复是将数据库从一台机器恢复到另一台机器的过程，适用于灾难恢复、系统迁移等场景。
 
-### 8.1 异机恢复的前提条件
+### 8.1 前提条件
 
 - **平台兼容性**：源机器和目标机器都是 Windows 平台
 - **Oracle 版本**：目标数据库的 Oracle 版本应与备份时的版本相同或更高
@@ -394,7 +470,7 @@ SQL "ALTER DATABASE DATAFILE 4 ONLINE";
 - **目录结构**：目标数据库的目录结构应与备份时的结构一致，或在恢复时进行调整
 - **Oracle 环境**：目标机器上已正确安装 Oracle 数据库软件
 
-### 8.2 异机恢复的步骤
+### 8.2 恢复步骤
 
 1. **准备环境**：在目标机器上安装 Oracle 数据库软件，配置环境变量
 2. **复制备份文件**：将源机器上的备份文件复制到目标机器的相应目录
@@ -406,21 +482,21 @@ SQL "ALTER DATABASE DATAFILE 4 ONLINE";
 8. **应用归档日志**：使用 RMAN 的 `RECOVER DATABASE;` 命令应用归档日志
 9. **打开数据库**：使用 `ALTER DATABASE OPEN RESETLOGS;` 命令打开数据库
 
-### 8.3 异机恢复的命令示例
+### 8.3 命令示例
 
-#### 8.3.1 注册备份
+#### 注册备份
 
 ```rman
 CATALOG START WITH 'D:\backup\rman';
 ```
 
-#### 8.3.2 验证备份状态
+#### 验证备份状态
 
 ```rman
 CROSSCHECK BACKUP;
 ```
 
-#### 8.3.3 还原控制文件
+#### 还原控制文件
 
 ```rman
 STARTUP NOMOUNT;
@@ -428,7 +504,7 @@ RESTORE CONTROLFILE FROM AUTOBACKUP;
 ALTER DATABASE MOUNT;
 ```
 
-#### 8.3.4 还原和恢复数据库
+#### 还原和恢复数据库
 
 ```rman
 RESTORE DATABASE;
@@ -436,7 +512,7 @@ RECOVER DATABASE;
 ALTER DATABASE OPEN RESETLOGS;
 ```
 
-### 8.4 异机恢复的注意事项
+### 8.4 注意事项
 
 - **目录路径调整**：如果目标机器的目录结构与备份时不同，需要在恢复前使用 `SET NEWNAME` 命令调整文件路径
 - **Oracle 环境**：确保目标机器上的 Oracle 环境已正确安装，并且 ORACLE_HOME 和 ORACLE_SID 已正确设置

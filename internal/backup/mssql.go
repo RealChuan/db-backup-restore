@@ -668,6 +668,25 @@ func (m *MSSQLBackup) DeleteInvalidBackups(ctx context.Context) error {
 	return nil
 }
 
+// DeleteAllBackups 删除所有备份
+func (m *MSSQLBackup) DeleteAllBackups(ctx context.Context) error {
+	sqlScript := `
+SET NOCOUNT ON;
+DELETE FROM msdb.dbo.restorefilegroup;
+DELETE FROM msdb.dbo.restorefile;
+DELETE FROM msdb.dbo.restorehistory;
+DELETE FROM msdb.dbo.backupfilegroup;
+DELETE FROM msdb.dbo.backupfile;
+DELETE FROM msdb.dbo.backupset;
+DELETE FROM msdb.dbo.backupmediafamily;
+DELETE FROM msdb.dbo.backupmediaset;`
+	output, err := m.execSQL(ctx, sqlScript)
+	if err != nil {
+		return fmt.Errorf("删除所有备份失败: %w, 输出: %s", err, output)
+	}
+	return nil
+}
+
 // Close 释放资源
 func (m *MSSQLBackup) Close() error {
 	return nil

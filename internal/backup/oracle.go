@@ -570,3 +570,13 @@ func (o *OracleBackup) DeleteInvalidBackups(ctx context.Context) error {
 	}
 	return nil
 }
+
+// DeleteAllBackups 删除所有备份
+func (o *OracleBackup) DeleteAllBackups(ctx context.Context) error {
+	script := "DELETE NOPROMPT BACKUP;"
+	output, err := o.execRman(ctx, script)
+	if err != nil {
+		return fmt.Errorf("删除所有备份失败: %w, 输出: %s", err, output)
+	}
+	return nil
+}

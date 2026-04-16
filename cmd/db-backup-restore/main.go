@@ -15,7 +15,7 @@ const baseBackupDir = "c:\\work\\database_backup"
 func main() {
 	// 解析命令行参数
 	dbType := flag.String("db-type", "oracle", "数据库类型: oracle, mssql")
-	action := flag.String("action", "", "操作类型: backup, restore, list, delete, validate, info")
+	action := flag.String("action", "", "操作类型: backup, restore, list, delete, validate, info, register, unregister, verify-status, delete-invalid, delete-all")
 
 	// 备份参数
 	backupType := flag.String("backup-type", "full", "备份类型: full, incremental, differential, logical, physical")
@@ -39,7 +39,7 @@ func main() {
 
 	// 检查必须的参数
 	if *action == "" {
-		utils.Fatalf("必须指定操作类型: -action backup|restore|list|delete|validate|info")
+		utils.Fatalf("必须指定操作类型: -action backup|restore|list|delete|validate|info|register|unregister|verify-status|delete-invalid|delete-all")
 	}
 
 	// 根据数据库类型获取配置（写死的配置）
@@ -80,6 +80,8 @@ func main() {
 		execVerifyBackupStatus(ctx, db)
 	case "delete-invalid":
 		execDeleteInvalidBackups(ctx, db)
+	case "delete-all":
+		execDeleteAllBackups(ctx, db)
 	default:
 		utils.Fatalf("无效的操作类型: %s", *action)
 	}
@@ -294,6 +296,18 @@ func execDeleteInvalidBackups(ctx context.Context, db backup.DatabaseBackup) {
 	err := db.DeleteInvalidBackups(ctx)
 	if err != nil {
 		utils.Fatalf("删除无效备份失败: %v", err)
+	}
+
+	utils.Info("删除成功")
+}
+
+// execDeleteAllBackups 删除所有备份
+func execDeleteAllBackups(ctx context.Context, db backup.DatabaseBackup) {
+	utils.Info("=== 删除所有备份 ===")
+
+	err := db.DeleteAllBackups(ctx)
+	if err != nil {
+		utils.Fatalf("删除所有备份失败: %v", err)
 	}
 
 	utils.Info("删除成功")
