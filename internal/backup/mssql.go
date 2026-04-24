@@ -114,7 +114,8 @@ func (m *MSSQLBackup) Backup(ctx context.Context, opts BackupOptions, callback P
 
 	backupDir := opts.TargetPath
 	if backupDir == "" {
-		backupDir = "./backups"
+		result.Error = errors.New("必须通过 -target-path 参数指定备份路径")
+		return result, result.Error
 	}
 	if err := os.MkdirAll(backupDir, 0755); err != nil {
 		result.Error = err
@@ -438,7 +439,7 @@ func (m *MSSQLBackup) buildRestoreScript(opts RestoreOptions, databaseName, back
 }
 
 // ListBackups 列出所有备份
-func (m *MSSQLBackup) ListBackups(ctx context.Context) ([]BackupInfo, error) {
+func (m *MSSQLBackup) ListBackups(ctx context.Context, opts ...BackupOptions) ([]BackupInfo, error) {
 	sqlScript := `
 SELECT 
     bs.backup_set_id AS BackupID,
@@ -486,7 +487,7 @@ func (m *MSSQLBackup) parseBackupList(output string) ([]BackupInfo, error) {
 		}
 
 		fields := strings.Fields(line)
-		if len(fields) < 8 {
+		if len(fields) < 11 {
 			continue
 		}
 
@@ -496,7 +497,6 @@ func (m *MSSQLBackup) parseBackupList(output string) ([]BackupInfo, error) {
 
 		backupID := fields[0]
 		backupType := fields[1]
-		startTime, _ := time.Parse("2006-01-02 15:04:05", fields[2]+" "+strings.Split(fields[3], ".")[0])
 		completionTime, _ := time.Parse("2006-01-02 15:04:05", fields[4]+" "+strings.Split(fields[5], ".")[0])
 		size, _ := strconv.ParseInt(fields[6], 10, 64)
 
@@ -509,18 +509,15 @@ func (m *MSSQLBackup) parseBackupList(output string) ([]BackupInfo, error) {
 			}
 		}
 		if len(fields) > 8 {
-			backupPath = strings.Join(fields[8:], " ")
+			backupPath = fields[8]
 		}
 
 		info := BackupInfo{
 			BackupID:       backupID,
 			BackupType:     backupType,
-			StartTime:      startTime,
 			CompletionTime: completionTime,
 			Size:           size,
 			Tag:            tag,
-			DeviceType:     "DISK",
-			Status:         "AVAILABLE",
 			BackupPath:     backupPath,
 		}
 		backups = append(backups, info)
@@ -530,7 +527,7 @@ func (m *MSSQLBackup) parseBackupList(output string) ([]BackupInfo, error) {
 }
 
 // DeleteBackup 删除指定备份
-func (m *MSSQLBackup) DeleteBackup(ctx context.Context, identifier string) error {
+func (m *MSSQLBackup) DeleteBackup(ctx context.Context, identifier string, opts ...BackupOptions) error {
 	var sqlScript string
 
 	if _, err := strconv.Atoi(identifier); err == nil {
@@ -555,25 +552,50 @@ DELETE FROM msdb.dbo.backupset WHERE backup_set_id = @bsid;`, identifier)
 }
 
 // ValidateBackup 验证备份有效性
-func (m *MSSQLBackup) ValidateBackup(ctx context.Context, backupID string) error {
+func (m *MSSQLBackup) ValidateBackup(ctx context.Context, backupID string, opts ...BackupOptions) error {
 	if backupID == "" {
 		return errors.New("必须指定备份ID")
 	}
 
-	sqlScript := fmt.Sprintf(`
-RESTORE VERIFYONLY FROM DISK = N'%s' WITH NOUNLOAD;
-`, backupID)
+	var backupPath string
 
+	if _, err := strconv.Atoi(backupID); err == nil {
+		queryScript := fmt.Sprintf(`
+SELECT bmf.physical_device_name 
+FROM msdb.dbo.backupset bs
+JOIN msdb.dbo.backupmediafamily bmf ON bs.media_set_id = bmf.media_set_id
+WHERE bs.backup_set_id = %s`, backupID)
+
+		output, err := m.execSQL(ctx, queryScript)
+		if err != nil {
+			return fmt.Errorf("查询备份路径失败: %w", err)
+		}
+
+		scanner := bufio.NewScanner(strings.NewReader(output))
+		found := false
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if strings.HasPrefix(line, "c:\\") || strings.HasPrefix(line, "C:\\") {
+				backupPath = line
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			return errors.New("未找到备份记录")
+		}
+	} else {
+		backupPath = backupID
+	}
+
+	sqlScript := fmt.Sprintf("RESTORE VERIFYONLY FROM DISK = N'%s' WITH NOUNLOAD;", backupPath)
 	output, err := m.execSQL(ctx, sqlScript)
 	if err != nil {
 		return fmt.Errorf("验证失败: %w, 输出: %s", err, output)
 	}
 
-	if strings.Contains(output, "BACKUP DATABASE") && strings.Contains(output, "successfully") {
-		return nil
-	}
-
-	if strings.Contains(output, "error") || strings.Contains(output, "failed") {
+	if strings.Contains(strings.ToUpper(output), "ERROR") || strings.Contains(strings.ToUpper(output), "FAILED") {
 		return errors.New("备份验证失败")
 	}
 
@@ -581,7 +603,7 @@ RESTORE VERIFYONLY FROM DISK = N'%s' WITH NOUNLOAD;
 }
 
 // GetBackupInfo 获取指定备份的详细信息
-func (m *MSSQLBackup) GetBackupInfo(ctx context.Context, backupID string) (map[string]string, error) {
+func (m *MSSQLBackup) GetBackupInfo(ctx context.Context, backupID string, opts ...BackupOptions) (map[string]string, error) {
 	var sqlScript string
 	if backupID != "" {
 		sqlScript = fmt.Sprintf(`
@@ -630,46 +652,135 @@ func (m *MSSQLBackup) UnregisterBackup(ctx context.Context, backupID string) err
 // VerifyBackupStatus 检查备份文件的状态并更新备份目录库
 func (m *MSSQLBackup) VerifyBackupStatus(ctx context.Context) error {
 	sqlScript := `
-DECLARE @backupSetId INT;
-DECLARE backup_cursor CURSOR FOR
-SELECT backup_set_id FROM msdb.dbo.backupset;
-
-OPEN backup_cursor;
-FETCH NEXT FROM backup_cursor INTO @backupSetId;
-
-WHILE @@FETCH_STATUS = 0
-BEGIN
-    BEGIN TRY
-        RESTORE VERIFYONLY FROM DISK = (SELECT physical_device_name FROM msdb.dbo.backupmediafamily WHERE media_set_id = (SELECT media_set_id FROM msdb.dbo.backupset WHERE backup_set_id = @backupSetId));
-    END TRY
-    BEGIN CATCH
-        UPDATE msdb.dbo.backupset SET is_valid = 0 WHERE backup_set_id = @backupSetId;
-    END CATCH
-    FETCH NEXT FROM backup_cursor INTO @backupSetId;
-END
-
-CLOSE backup_cursor;
-DEALLOCATE backup_cursor;
+SELECT 
+    bs.backup_set_id, 
+    bmf.physical_device_name 
+FROM msdb.dbo.backupset bs
+JOIN msdb.dbo.backupmediafamily bmf ON bs.media_set_id = bmf.media_set_id
+WHERE bmf.device_type = 2
 `
 	output, err := m.execSQL(ctx, sqlScript)
 	if err != nil {
-		return fmt.Errorf("检查备份状态失败: %w, 输出: %s", err, output)
+		return fmt.Errorf("查询备份记录失败: %w", err)
 	}
+
+	scanner := bufio.NewScanner(strings.NewReader(output))
+	lines := make([]string, 0)
+	for scanner.Scan() {
+		lines = append(lines, scanner.Text())
+	}
+
+	if len(lines) < 5 {
+		utils.Info("没有需要检查的备份记录")
+		return nil
+	}
+
+	for i := 3; i < len(lines); i++ {
+		line := strings.TrimSpace(lines[i])
+		if line == "" || strings.Contains(line, "行受影响") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+
+		backupID := fields[0]
+		backupPath := fields[1]
+
+		verifyScript := fmt.Sprintf("RESTORE VERIFYONLY FROM DISK = N'%s' WITH NOUNLOAD;", backupPath)
+		if _, err := m.execSQL(ctx, verifyScript); err != nil {
+			utils.Warnf("备份 %s 验证失败: %v", backupID, err)
+
+			deleteScript := fmt.Sprintf(`
+SET NOCOUNT ON;
+DELETE rfg FROM msdb.dbo.restorefilegroup rfg JOIN msdb.dbo.restorehistory rh ON rfg.restore_history_id = rh.restore_history_id WHERE rh.backup_set_id = %s;
+DELETE rf FROM msdb.dbo.restorefile rf JOIN msdb.dbo.restorehistory rh ON rf.restore_history_id = rh.restore_history_id WHERE rh.backup_set_id = %s;
+DELETE FROM msdb.dbo.restorehistory WHERE backup_set_id = %s;
+DELETE FROM msdb.dbo.backupfilegroup WHERE backup_set_id = %s;
+DELETE FROM msdb.dbo.backupfile WHERE backup_set_id = %s;
+DELETE FROM msdb.dbo.backupset WHERE backup_set_id = %s;`,
+				backupID, backupID, backupID, backupID, backupID, backupID)
+
+			if _, err := m.execSQL(ctx, deleteScript); err != nil {
+				utils.Warnf("删除无效备份记录 %s 失败: %v", backupID, err)
+			} else {
+				utils.Infof("已删除无效备份记录: %s", backupID)
+			}
+		} else {
+			utils.Infof("备份 %s 验证通过", backupID)
+		}
+	}
+
+	utils.Info("备份状态检查完成")
 	return nil
 }
 
-// DeleteInvalidBackups 删除无效的备份记录
-func (m *MSSQLBackup) DeleteInvalidBackups(ctx context.Context) error {
-	sqlScript := `DELETE FROM msdb.dbo.backupset WHERE is_valid = 0;`
+// DeleteInvalidBackups 删除无效的备份记录（文件不存在的备份）
+func (m *MSSQLBackup) DeleteInvalidBackups(ctx context.Context, opts ...BackupOptions) error {
+	sqlScript := `
+SELECT 
+    bs.backup_set_id, 
+    bmf.physical_device_name 
+FROM msdb.dbo.backupset bs
+JOIN msdb.dbo.backupmediafamily bmf ON bs.media_set_id = bmf.media_set_id
+WHERE bmf.device_type = 2
+`
 	output, err := m.execSQL(ctx, sqlScript)
 	if err != nil {
-		return fmt.Errorf("删除无效备份失败: %w, 输出: %s", err, output)
+		return fmt.Errorf("查询备份记录失败: %w", err)
 	}
+
+	scanner := bufio.NewScanner(strings.NewReader(output))
+	lines := make([]string, 0)
+	for scanner.Scan() {
+		lines = append(lines, scanner.Text())
+	}
+
+	var invalidBackupIDs []string
+	for i := 3; i < len(lines); i++ {
+		line := strings.TrimSpace(lines[i])
+		if line == "" || strings.Contains(line, "行受影响") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) >= 2 {
+			backupID := fields[0]
+			backupPath := fields[1]
+			if _, err := os.Stat(backupPath); os.IsNotExist(err) {
+				invalidBackupIDs = append(invalidBackupIDs, backupID)
+			}
+		}
+	}
+
+	if len(invalidBackupIDs) == 0 {
+		utils.Info("没有无效的备份记录")
+		return nil
+	}
+
+	for _, backupID := range invalidBackupIDs {
+		deleteScript := fmt.Sprintf(`
+SET NOCOUNT ON;
+DELETE rfg FROM msdb.dbo.restorefilegroup rfg JOIN msdb.dbo.restorehistory rh ON rfg.restore_history_id = rh.restore_history_id WHERE rh.backup_set_id = %s;
+DELETE rf FROM msdb.dbo.restorefile rf JOIN msdb.dbo.restorehistory rh ON rf.restore_history_id = rh.restore_history_id WHERE rh.backup_set_id = %s;
+DELETE FROM msdb.dbo.restorehistory WHERE backup_set_id = %s;
+DELETE FROM msdb.dbo.backupfilegroup WHERE backup_set_id = %s;
+DELETE FROM msdb.dbo.backupfile WHERE backup_set_id = %s;
+DELETE FROM msdb.dbo.backupset WHERE backup_set_id = %s;`,
+			backupID, backupID, backupID, backupID, backupID, backupID)
+
+		if _, err := m.execSQL(ctx, deleteScript); err != nil {
+			utils.Warnf("删除备份记录 %s 失败: %v", backupID, err)
+		} else {
+			utils.Infof("已删除无效备份记录: %s", backupID)
+		}
+	}
+
 	return nil
 }
 
 // DeleteAllBackups 删除所有备份
-func (m *MSSQLBackup) DeleteAllBackups(ctx context.Context) error {
+func (m *MSSQLBackup) DeleteAllBackups(ctx context.Context, opts ...BackupOptions) error {
 	sqlScript := `
 SET NOCOUNT ON;
 DELETE FROM msdb.dbo.restorefilegroup;

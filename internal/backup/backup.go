@@ -65,16 +65,15 @@ type RestoreResult struct {
 
 // BackupInfo 备份元信息
 type BackupInfo struct {
-	BackupID       string    // 备份集ID（BS Key）
-	BackupType     string    // 备份类型：FULL, INCREMENTAL, ARCHIVELOG
-	BackupTime     time.Time // 备份完成时间
-	StartTime      time.Time // 备份开始时间
-	Size           int64     // 备份大小（字节）
-	Status         string    // AVAILABLE, EXPIRED, DELETED
-	Tag            string    // 备份标签
-	DeviceType     string    // DISK, SBT
-	CompletionTime time.Time
-	BackupPath     string // 备份文件路径
+	BackupID       string    // 必选 - 备份集ID（BS Key）
+	CompletionTime time.Time // 必选 - 备份完成时间
+
+	BackupType string // 可选 - 备份类型：FULL, INCREMENTAL, ARCHIVELOG，Oracle/MSSQL使用
+	Status     string // 可选 - 备份状态：AVAILABLE, EXPIRED, DELETED，Oracle使用真实值
+	Size       int64  // 可选 - 备份大小（字节），Oracle不支持
+	Tag        string // 可选 - 备份标签，Oracle/MSSQL使用
+	DeviceType string // 可选 - 设备类型：DISK, SBT，Oracle使用真实值
+	BackupPath string // 可选 - 备份文件路径，MSSQL/MySQL使用
 }
 
 // ProgressCallback 进度回调函数（可选）
@@ -89,17 +88,17 @@ type DatabaseBackup interface {
 	Restore(ctx context.Context, opts RestoreOptions, callback ProgressCallback) (*RestoreResult, error)
 
 	// ListBackups 列出所有可用的备份（按时间排序）
-	ListBackups(ctx context.Context) ([]BackupInfo, error)
+	ListBackups(ctx context.Context, opts ...BackupOptions) ([]BackupInfo, error)
 
 	// DeleteBackup 删除指定备份（按备份ID或时间点）
 	// identifier 可以是备份集ID、时间戳字符串（RFC3339）或备份标签
-	DeleteBackup(ctx context.Context, identifier string) error
+	DeleteBackup(ctx context.Context, identifier string, opts ...BackupOptions) error
 
 	// ValidateBackup 验证备份文件完整性（可选）
-	ValidateBackup(ctx context.Context, backupID string) error
+	ValidateBackup(ctx context.Context, backupID string, opts ...BackupOptions) error
 
 	// GetBackupInfo 获取备份文件元信息（如备份时间、内容）
-	GetBackupInfo(ctx context.Context, backupID string) (map[string]string, error)
+	GetBackupInfo(ctx context.Context, backupID string, opts ...BackupOptions) (map[string]string, error)
 
 	// RegisterBackup 将指定路径的备份文件注册到备份目录库
 	RegisterBackup(ctx context.Context, backupPath string) error
@@ -111,10 +110,10 @@ type DatabaseBackup interface {
 	VerifyBackupStatus(ctx context.Context) error
 
 	// DeleteInvalidBackups 删除无效的备份记录
-	DeleteInvalidBackups(ctx context.Context) error
+	DeleteInvalidBackups(ctx context.Context, opts ...BackupOptions) error
 
 	// DeleteAllBackups 删除所有备份
-	DeleteAllBackups(ctx context.Context) error
+	DeleteAllBackups(ctx context.Context, opts ...BackupOptions) error
 
 	// Close 释放资源（如数据库连接）
 	Close() error
@@ -139,6 +138,8 @@ type DBConfig struct {
 // NewBackup 根据数据库类型创建备份实例
 func NewBackup(config *DBConfig) (DatabaseBackup, error) {
 	switch config.Type {
+	case "mysql":
+		return NewMySQLBackup(config)
 	case "oracle":
 		return NewOracleBackup(config)
 	case "mssql":

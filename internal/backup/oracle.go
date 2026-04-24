@@ -88,11 +88,11 @@ func (o *OracleBackup) execSQL(ctx context.Context, sqlText string) (string, err
 
 // execRman 执行 RMAN 命令
 func (o *OracleBackup) execRman(ctx context.Context, rmanScript string) (string, error) {
-	// 打印 RMAN 命令
 	utils.Infof("\n========== RMAN 命令开始 ==========\n%s\n========== RMAN 命令结束 ==========", rmanScript)
 
 	cmd := exec.CommandContext(ctx, "rman", "target", "/")
 	cmd.Env = append(os.Environ(), o.env...)
+	cmd.Env = append(cmd.Env, "NLS_DATE_FORMAT=YYYY-MM-DD HH24:MI:SS")
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return "", err
@@ -103,7 +103,6 @@ func (o *OracleBackup) execRman(ctx context.Context, rmanScript string) (string,
 		fmt.Fprintln(stdin, "EXIT;")
 	}()
 	output, err := utils.ExecCommand(ctx, cmd)
-	// 打印 RMAN 输出，无论成功还是失败
 	utils.Infof("\n========== RMAN 执行输出开始 ==========\n%s\n========== RMAN 执行输出结束 ==========", output)
 	if err != nil {
 		return output, fmt.Errorf("rman 执行失败: %w", err)
@@ -392,7 +391,7 @@ func (o *OracleBackup) buildRestoreScript(opts RestoreOptions) string {
 }
 
 // ListBackups 列出所有备份（按完成时间排序）
-func (o *OracleBackup) ListBackups(ctx context.Context) ([]BackupInfo, error) {
+func (o *OracleBackup) ListBackups(ctx context.Context, opts ...BackupOptions) ([]BackupInfo, error) {
 	script := "LIST BACKUP SUMMARY;"
 	output, err := o.execRman(ctx, script)
 	if err != nil {
@@ -405,23 +404,14 @@ func (o *OracleBackup) ListBackups(ctx context.Context) ([]BackupInfo, error) {
 func (o *OracleBackup) parseBackupList(output string) ([]BackupInfo, error) {
 	var backups []BackupInfo
 	scanner := bufio.NewScanner(strings.NewReader(output))
-	// 示例行: " 136     B  F  A DISK        07-4月 -26 1       1       NO         TAG20260407T165358"
-	re := regexp.MustCompile(`^\s*(\d+)\s+([A-Z])\s+([A-Z])\s+([A-Z])\s+(\S+)\s+(\d{2}-\S+\s+-\d{2})\s+\d+\s+\d+\s+\S+\s+TAG(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})`)
+	re := regexp.MustCompile(`^\s*(\d+)\s+([A-Z])\s+([A-Z])\s+([A-Z])\s+(\S+)\s+(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+\d+\s+\d+\s+(YES|NO)\s+TAG(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})`)
+
 	for scanner.Scan() {
 		line := scanner.Text()
 		matches := re.FindStringSubmatch(line)
-		if len(matches) >= 13 {
-			// 解析日期时间
-			year := matches[7]
-			month := matches[8]
-			day := matches[9]
-			hour := matches[10]
-			minute := matches[11]
-			second := matches[12]
-			timeStr := fmt.Sprintf("%s-%s-%s %s:%s:%s", year, month, day, hour, minute, second)
-			t, _ := time.Parse("2006-01-02 15:04:05", timeStr)
+		if len(matches) >= 14 {
+			completionTime, _ := time.Parse("2006-01-02 15:04:05", matches[6])
 
-			// 映射备份类型
 			backupType := ""
 			switch matches[3] {
 			case "F":
@@ -434,7 +424,6 @@ func (o *OracleBackup) parseBackupList(output string) ([]BackupInfo, error) {
 				backupType = string(matches[3])
 			}
 
-			// 映射状态
 			status := ""
 			switch matches[4] {
 			case "A":
@@ -452,10 +441,8 @@ func (o *OracleBackup) parseBackupList(output string) ([]BackupInfo, error) {
 				BackupType:     backupType,
 				DeviceType:     matches[5],
 				Status:         status,
-				BackupTime:     t,
-				CompletionTime: t,
-				Size:           0, // 实际输出中没有大小信息
-				Tag:            fmt.Sprintf("TAG%s%s%sT%s%s%s", year, month, day, hour, minute, second),
+				CompletionTime: completionTime,
+				Tag:            fmt.Sprintf("TAG%s%s%sT%s%s%s", matches[8], matches[9], matches[10], matches[11], matches[12], matches[13]),
 			}
 			backups = append(backups, info)
 		}
@@ -464,7 +451,7 @@ func (o *OracleBackup) parseBackupList(output string) ([]BackupInfo, error) {
 }
 
 // DeleteBackup 删除指定备份（按备份集ID或时间点）
-func (o *OracleBackup) DeleteBackup(ctx context.Context, identifier string) error {
+func (o *OracleBackup) DeleteBackup(ctx context.Context, identifier string, opts ...BackupOptions) error {
 	var rmanCmd string
 	// 判断 identifier 是否为时间格式
 	var t time.Time
@@ -491,7 +478,7 @@ func (o *OracleBackup) DeleteBackup(ctx context.Context, identifier string) erro
 }
 
 // ValidateBackup 验证备份有效性
-func (o *OracleBackup) ValidateBackup(ctx context.Context, backupID string) error {
+func (o *OracleBackup) ValidateBackup(ctx context.Context, backupID string, opts ...BackupOptions) error {
 	script := "RESTORE DATABASE VALIDATE CHECK LOGICAL;"
 	if backupID != "" {
 		script = fmt.Sprintf("VALIDATE BACKUPSET %s;", backupID)
@@ -507,7 +494,7 @@ func (o *OracleBackup) ValidateBackup(ctx context.Context, backupID string) erro
 }
 
 // GetBackupInfo 获取指定备份的详细信息
-func (o *OracleBackup) GetBackupInfo(ctx context.Context, backupID string) (map[string]string, error) {
+func (o *OracleBackup) GetBackupInfo(ctx context.Context, backupID string, opts ...BackupOptions) (map[string]string, error) {
 	var script string
 	if backupID != "" {
 		// 获取指定备份集的详细信息
@@ -562,7 +549,7 @@ func (o *OracleBackup) VerifyBackupStatus(ctx context.Context) error {
 }
 
 // DeleteInvalidBackups 删除无效的备份记录
-func (o *OracleBackup) DeleteInvalidBackups(ctx context.Context) error {
+func (o *OracleBackup) DeleteInvalidBackups(ctx context.Context, opts ...BackupOptions) error {
 	script := "DELETE NOPROMPT EXPIRED BACKUP;"
 	output, err := o.execRman(ctx, script)
 	if err != nil {
@@ -572,7 +559,7 @@ func (o *OracleBackup) DeleteInvalidBackups(ctx context.Context) error {
 }
 
 // DeleteAllBackups 删除所有备份
-func (o *OracleBackup) DeleteAllBackups(ctx context.Context) error {
+func (o *OracleBackup) DeleteAllBackups(ctx context.Context, opts ...BackupOptions) error {
 	script := "DELETE NOPROMPT BACKUP;"
 	output, err := o.execRman(ctx, script)
 	if err != nil {

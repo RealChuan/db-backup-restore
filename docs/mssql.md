@@ -48,7 +48,6 @@
     - [7.2 恢复步骤](#72-恢复步骤)
     - [7.3 命令示例](#73-命令示例)
     - [7.4 注意事项](#74-注意事项)
-  - [8. 安全建议](#8-安全建议)
 
 ---
 
@@ -57,33 +56,27 @@
 ### 1.1 全量备份
 
 ```sql
-BACKUP DATABASE [YourDatabaseName]
-TO DISK = N'C:\backup\YourDatabaseName_20260415_150405.bak'
-WITH COMPRESSION, STATS = 10;
+BACKUP DATABASE [YourDatabaseName] TO DISK = N'C:\backup\YourDatabaseName_20260415_150405.bak' WITH COMPRESSION, STATS = 10;
 ```
 
 ### 1.2 带描述的备份
 
 ```sql
-BACKUP DATABASE [YourDatabaseName]
-TO DISK = N'C:\backup\YourDatabaseName_20260415_150405.bak'
-WITH COMPRESSION, DESCRIPTION = N'Full backup before migration', STATS = 10;
+BACKUP DATABASE [YourDatabaseName] TO DISK = N'C:\backup\YourDatabaseName_20260415_150405.bak' WITH COMPRESSION, DESCRIPTION = N'Full backup before migration', STATS = 10;
 ```
 
 ### 1.3 差异备份
 
+> **说明**：当前代码实现仅支持全量备份，差异备份和事务日志备份需手动执行。
+
 ```sql
-BACKUP DATABASE [YourDatabaseName]
-TO DISK = N'C:\backup\YourDatabaseName_diff_20260415_150405.bak'
-WITH DIFFERENTIAL, COMPRESSION, STATS = 10;
+BACKUP DATABASE [YourDatabaseName] TO DISK = N'C:\backup\YourDatabaseName_diff_20260415_150405.bak' WITH DIFFERENTIAL, COMPRESSION, STATS = 10;
 ```
 
 ### 1.4 事务日志备份
 
 ```sql
-BACKUP LOG [YourDatabaseName]
-TO DISK = N'C:\backup\YourDatabaseName_log_20260415_150405.trn'
-WITH COMPRESSION, STATS = 10;
+BACKUP LOG [YourDatabaseName] TO DISK = N'C:\backup\YourDatabaseName_log_20260415_150405.trn' WITH COMPRESSION, STATS = 10;
 ```
 
 ---
@@ -450,20 +443,3 @@ STATS = 10;
 - **SQL Server 环境**：确保目标机器上的 SQL Server 环境已正确安装
 - **备份文件验证**：在恢复前使用 `RESTORE VERIFYONLY` 命令验证备份文件的可用性
 - **权限**：确保 SQL Server 服务账户对备份文件和目标目录有足够的权限
-
----
-
-## 8. 安全建议
-
-> **🔒 安全最佳实践**
->
-> 安全的备份策略是保障数据安全的重要组成部分，以下是一些安全最佳实践：
-
-- **定期清理**：定期清理过期备份，避免磁盘空间耗尽。
-- **异地存储**：对重要备份文件进行异地存储或云备份，确保灾难发生时数据安全。
-- **加密保护**：使用加密备份保护敏感数据，防止未授权访问。
-- **演练测试**：每季度至少演练一次完整还原流程，确保备份可用。
-- **完整性校验**：对备份文件进行校验，确保其完整性和可用性。
-- **权限管理**：严格控制备份文件的访问权限，仅授权人员可以访问。
-- **备份策略**：根据业务需求制定合理的备份策略，包括备份频率和保留期限。
-- **监控告警**：建立备份监控机制，及时发现和处理备份失败的情况。

@@ -29,17 +29,36 @@ func ConvertGBKToUTF8(data []byte) (string, error) {
 	return string(decoded), nil
 }
 
-// ExecCommand 执行命令并处理输出的字符编码
+// ExecCommand 执行命令并处理输出的字符编码（只返回 stdout）
+// 无论命令是否成功，都返回 stdout 和 error
 func ExecCommand(ctx context.Context, cmd *exec.Cmd) (string, error) {
-	output, err := cmd.CombinedOutput()
-	// 尝试将GBK编码转换为UTF-8，解决乱码问题
-	convertedOutput, convertErr := ConvertGBKToUTF8(output)
-	if convertErr != nil {
-		// 如果转换失败，使用原始输出
-		convertedOutput = string(output)
-	}
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return convertedOutput, fmt.Errorf("命令执行失败: %w, 输出: %s", err, convertedOutput)
+		return "", err
 	}
-	return convertedOutput, nil
+
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return "", err
+	}
+
+	if err := cmd.Start(); err != nil {
+		return "", err
+	}
+
+	stdoutBytes, _ := io.ReadAll(stdout)
+	stderrBytes, _ := io.ReadAll(stderr)
+
+	output, _ := ConvertGBKToUTF8(stdoutBytes)
+	stderrOutput, _ := ConvertGBKToUTF8(stderrBytes)
+
+	if stderrOutput != "" {
+		Warnf("命令执行警告: %s", stderrOutput)
+	}
+
+	if err := cmd.Wait(); err != nil {
+		return output, fmt.Errorf("命令执行失败: %w, stderr: %s", err, stderrOutput)
+	}
+
+	return output, nil
 }
