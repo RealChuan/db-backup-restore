@@ -31,7 +31,14 @@ func ConvertGBKToUTF8(data []byte) (string, error) {
 
 // ExecCommand 执行命令并处理输出的字符编码（只返回 stdout）
 // 无论命令是否成功，都返回 stdout 和 error
+// 默认进行 GBK 转 UTF8 转换
 func ExecCommand(ctx context.Context, cmd *exec.Cmd) (string, error) {
+	return ExecCommandWithEncoding(ctx, cmd, true)
+}
+
+// ExecCommandWithEncoding 执行命令并处理输出的字符编码
+// convertGBK: 是否将 GBK 编码转换为 UTF8
+func ExecCommandWithEncoding(ctx context.Context, cmd *exec.Cmd, convertGBK bool) (string, error) {
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return "", err
@@ -49,8 +56,14 @@ func ExecCommand(ctx context.Context, cmd *exec.Cmd) (string, error) {
 	stdoutBytes, _ := io.ReadAll(stdout)
 	stderrBytes, _ := io.ReadAll(stderr)
 
-	output, _ := ConvertGBKToUTF8(stdoutBytes)
-	stderrOutput, _ := ConvertGBKToUTF8(stderrBytes)
+	var output, stderrOutput string
+	if convertGBK {
+		output, _ = ConvertGBKToUTF8(stdoutBytes)
+		stderrOutput, _ = ConvertGBKToUTF8(stderrBytes)
+	} else {
+		output = string(stdoutBytes)
+		stderrOutput = string(stderrBytes)
+	}
 
 	if stderrOutput != "" {
 		Warnf("命令执行警告: %s", stderrOutput)

@@ -373,8 +373,6 @@ func (m *MySQLBackup) Restore(ctx context.Context, opts RestoreOptions, callback
 	var backupFile string
 	if opts.BackupTag != "" {
 		backupFile = opts.BackupTag
-	} else if opts.BackupID != "" {
-		backupFile = opts.BackupID
 	}
 
 	if backupFile == "" {

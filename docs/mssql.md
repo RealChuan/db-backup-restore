@@ -10,9 +10,8 @@
   - [📋 目录](#-目录)
   - [1. 备份命令](#1-备份命令)
     - [1.1 全量备份](#11-全量备份)
-    - [1.2 带描述的备份](#12-带描述的备份)
-    - [1.3 差异备份](#13-差异备份)
-    - [1.4 事务日志备份](#14-事务日志备份)
+    - [1.2 差异备份](#12-差异备份)
+    - [1.3 事务日志备份](#13-事务日志备份)
   - [2. 还原命令](#2-还原命令)
     - [2.1 还原到最新完整备份（默认）](#21-还原到最新完整备份默认)
     - [2.2 按时间点还原（Point-in-Time）](#22-按时间点还原point-in-time)
@@ -59,13 +58,7 @@
 BACKUP DATABASE [YourDatabaseName] TO DISK = N'C:\backup\YourDatabaseName_20260415_150405.bak' WITH COMPRESSION, STATS = 10;
 ```
 
-### 1.2 带描述的备份
-
-```sql
-BACKUP DATABASE [YourDatabaseName] TO DISK = N'C:\backup\YourDatabaseName_20260415_150405.bak' WITH COMPRESSION, DESCRIPTION = N'Full backup before migration', STATS = 10;
-```
-
-### 1.3 差异备份
+### 1.2 差异备份
 
 > **说明**：当前代码实现仅支持全量备份，差异备份和事务日志备份需手动执行。
 
@@ -73,7 +66,7 @@ BACKUP DATABASE [YourDatabaseName] TO DISK = N'C:\backup\YourDatabaseName_202604
 BACKUP DATABASE [YourDatabaseName] TO DISK = N'C:\backup\YourDatabaseName_diff_20260415_150405.bak' WITH DIFFERENTIAL, COMPRESSION, STATS = 10;
 ```
 
-### 1.4 事务日志备份
+### 1.3 事务日志备份
 
 ```sql
 BACKUP LOG [YourDatabaseName] TO DISK = N'C:\backup\YourDatabaseName_log_20260415_150405.trn' WITH COMPRESSION, STATS = 10;

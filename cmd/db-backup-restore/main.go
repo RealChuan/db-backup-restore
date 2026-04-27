@@ -14,26 +14,27 @@ import (
 // 基础目录路径
 const baseBackupDir = "c:\\work\\database_backup"
 
-// 操作类型常量
+// 操作类型常量（各操作的数据库支持情况详见 backup.go 中 DatabaseBackup 接口注释）
 const (
-	ActionBackup        = "backup"
-	ActionRestore       = "restore"
-	ActionList          = "list"
-	ActionDelete        = "delete"
-	ActionValidate      = "validate"
-	ActionInfo          = "info"
-	ActionRegister      = "register"
-	ActionUnregister    = "unregister"
-	ActionVerifyStatus  = "verify-status"
-	ActionDeleteInvalid = "delete-invalid"
-	ActionDeleteAll     = "delete-all"
+	ActionBackup        = "backup"         // 备份操作
+	ActionRestore       = "restore"        // 还原操作
+	ActionList          = "list"           // 列出备份
+	ActionDelete        = "delete"         // 删除指定备份
+	ActionValidate      = "validate"       // 验证备份有效性
+	ActionInfo          = "info"           // 获取备份详细信息
+	ActionRegister      = "register"       // 注册备份到目录库
+	ActionUnregister    = "unregister"     // 从目录库移除备份记录
+	ActionVerifyStatus  = "verify-status"  // 检查备份状态并更新
+	ActionDeleteInvalid = "delete-invalid" // 删除无效备份记录
+	ActionDeleteAll     = "delete-all"     // 删除所有备份
 )
 
 // 数据库类型常量
 const (
-	DBTypeMySQL  = "mysql"
-	DBTypeOracle = "oracle"
-	DBTypeMSSQL  = "mssql"
+	DBTypeMySQL      = "mysql"
+	DBTypeOracle     = "oracle"
+	DBTypeMSSQL      = "mssql"
+	DBTypePostgreSQL = "postgresql"
 )
 
 func main() {
@@ -71,28 +72,28 @@ func main() {
 }
 
 // Args 命令行参数结构
+// 注意：某些参数仅对特定数据库类型有效，详见 backup.go 中的注释
 type Args struct {
-	dbType           string
-	action           string
-	backupType       string
-	parallelism      int
-	compression      bool
-	description      string
-	pointInTime      string
-	backupTag        string
-	targetDB         string
-	deleteIdentifier string
-	validateBackupID string
-	infoBackupID     string
-	registerPath     string
-	unregisterID     string
+	dbType           string // 数据库类型
+	action           string // 操作类型
+	backupType       string // 备份类型
+	parallelism      int    // 并行度
+	compression      bool   // 是否压缩
+	pointInTime      string // 时间点恢复
+	backupTag        string // 备份标签/路径
+	targetDB         string // 还原目标数据库名
+	deleteIdentifier string // 删除备份的标识符
+	validateBackupID string // 验证备份的ID
+	infoBackupID     string // 获取备份信息的ID
+	registerPath     string // 注册备份的路径
+	unregisterID     string // 移除备份记录的ID
 }
 
 // parseArgs 解析命令行参数
 func parseArgs() *Args {
 	args := &Args{}
 
-	flag.StringVar(&args.dbType, "db-type", "mysql", "数据库类型: mysql, oracle, mssql")
+	flag.StringVar(&args.dbType, "db-type", "oracle", "数据库类型: oracle, mssql, mysql, postgresql")
 	flag.StringVar(&args.action, "action", "",
 		"操作类型: backup, restore, list, delete, validate, info, "+
 			"register, unregister, verify-status, delete-invalid, delete-all")
@@ -101,11 +102,10 @@ func parseArgs() *Args {
 	flag.StringVar(&args.backupType, "backup-type", "full", "备份类型: full, incremental, differential, logical, physical")
 	flag.IntVar(&args.parallelism, "parallelism", 2, "并行度")
 	flag.BoolVar(&args.compression, "compression", true, "是否压缩")
-	flag.StringVar(&args.description, "description", "", "备份描述")
 
 	// 还原参数
 	flag.StringVar(&args.pointInTime, "point-in-time", "", "时间点恢复，格式: 2006-01-02T15:04:05")
-	flag.StringVar(&args.backupTag, "backup-tag", "", "备份标签（Oracle: 标签名, MSSQL/MySQL: 备份文件路径）")
+	flag.StringVar(&args.backupTag, "backup-tag", "", "备份标签（Oracle: 标签名, MSSQL/MySQL/PostgreSQL: 备份文件路径）")
 	flag.StringVar(&args.targetDB, "target-db", "", "还原的目标数据库名")
 
 	// 其他参数
@@ -125,7 +125,7 @@ const (
 		"backup|restore|list|delete|validate|info|" +
 		"register|unregister|verify-status|delete-invalid|delete-all"
 	errMsgInvalidAction         = "无效的操作类型: %s"
-	errMsgUnsupportedDBType     = "不支持的数据库类型: %s，支持的类型: mysql, oracle, mssql"
+	errMsgUnsupportedDBType     = "不支持的数据库类型: %s，支持的类型: mysql, oracle, mssql, postgresql"
 	errMsgDeleteIdentifierEmpty = "必须指定删除备份的标识符: -delete-identifier"
 	errMsgValidateIDEmpty       = "必须指定验证备份的ID: -validate-id"
 	errMsgInfoIDEmpty           = "必须指定获取备份信息的ID: -info-id"
@@ -159,9 +159,10 @@ func validateArgs(args *Args) error {
 	}
 
 	validDBTypes := map[string]bool{
-		DBTypeMySQL:  true,
-		DBTypeOracle: true,
-		DBTypeMSSQL:  true,
+		DBTypeMySQL:      true,
+		DBTypeOracle:     true,
+		DBTypeMSSQL:      true,
+		DBTypePostgreSQL: true,
 	}
 
 	if !validDBTypes[args.dbType] {
@@ -224,7 +225,6 @@ func execBackup(ctx context.Context, db backup.DatabaseBackup, args *Args, targe
 		Parallelism:    args.parallelism,
 		Compression:    args.compression,
 		TargetPath:     target,
-		Description:    args.description,
 		ArchiveLogDest: archiveLogDest,
 		Timeout:        2 * time.Hour,
 	}
@@ -250,7 +250,7 @@ func execBackup(ctx context.Context, db backup.DatabaseBackup, args *Args, targe
 	return nil
 }
 
-// parseBackupType 解析备份类型
+// parseBackupType 解析备份类型（各数据库支持情况详见 backup.go 中 BackupType 注释）
 func parseBackupType(backupType string) (backup.BackupType, error) {
 	switch backupType {
 	case "full":
@@ -516,6 +516,20 @@ func getDBConfig(dbType string) (*backup.DBConfig, error) {
 			Password: "",
 			Database: "",
 			Extra:    map[string]string{"AUTH_TYPE": "windows"},
+		}, nil
+
+	case DBTypePostgreSQL:
+		return &backup.DBConfig{
+			Type:     DBTypePostgreSQL,
+			Host:     "localhost",
+			Port:     5432,
+			User:     "postgres",
+			Password: "123456",
+			Database: "",
+			SSLMode:  "disable",
+			Extra: map[string]string{
+				"PG_BIN_PATH": "C:\\Program Files\\PostgreSQL\\18\\bin",
+			},
 		}, nil
 
 	default:
