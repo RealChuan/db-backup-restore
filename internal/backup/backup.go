@@ -7,29 +7,33 @@ import (
 )
 
 // BackupType 定义备份类型
+// 各数据库备份类型支持情况：
+// - Oracle: full, incremental, differential（需开启归档模式）
+// - MSSQL: full（差异备份和事务日志备份需手动执行）
+// - MySQL: full, logical（通过 mysqldump 实现）
+// - PostgreSQL: full, logical, physical（physical 为目录格式备份）
 type BackupType string
 
 const (
-	BackupFull         BackupType = "full"         // 全量备份
-	BackupIncremental  BackupType = "incremental"  // 增量备份
-	BackupDifferential BackupType = "differential" // 差异备份
-	BackupLogical      BackupType = "logical"      // 逻辑备份
-	BackupPhysical     BackupType = "physical"     // 物理备份
+	BackupFull         BackupType = "full"         // 全量备份（所有数据库支持）
+	BackupIncremental  BackupType = "incremental"  // 增量备份（仅 Oracle 支持）
+	BackupDifferential BackupType = "differential" // 差异备份（仅 Oracle 支持）
+	BackupLogical      BackupType = "logical"      // 逻辑备份（MySQL/PostgreSQL 支持）
+	BackupPhysical     BackupType = "physical"     // 物理备份（仅 PostgreSQL 支持）
 )
 
 // BackupOptions 备份操作的可选参数
 type BackupOptions struct {
 	Type             BackupType        // 备份类型
-	Parallelism      int               // 并行度（若支持）
-	Compression      bool              // 是否压缩
+	Parallelism      int               // 并行度（Oracle/PostgreSQL 支持）
+	Compression      bool              // 是否压缩（Oracle/PostgreSQL 支持）
 	CompressionLevel int               // 压缩级别 1-9
-	Encryption       bool              // 是否加密
+	Encryption       bool              // 是否加密（仅 Oracle 支持）
 	EncryptionKey    string            // 加密密钥
 	TargetPath       string            // 备份存储路径（若为空，使用默认）
-	ArchiveLogDest   string            // 归档日志目标路径（Oracle专用）
+	ArchiveLogDest   string            // 归档日志目标路径（仅 Oracle 支持）
 	ExtraParams      map[string]string // 数据库特定参数
 	Timeout          time.Duration     // 超时时间
-	Description      string            // 备份描述/标签
 }
 
 // BackupResult 备份操作返回结果
@@ -94,22 +98,22 @@ type DatabaseBackup interface {
 	// identifier 可以是备份集ID、时间戳字符串（RFC3339）或备份标签
 	DeleteBackup(ctx context.Context, identifier string, opts ...BackupOptions) error
 
-	// ValidateBackup 验证备份文件完整性（可选）
+	// ValidateBackup 验证备份文件完整性（Oracle/MSSQL 支持，MySQL/PostgreSQL 有限支持）
 	ValidateBackup(ctx context.Context, backupID string, opts ...BackupOptions) error
 
 	// GetBackupInfo 获取备份文件元信息（如备份时间、内容）
 	GetBackupInfo(ctx context.Context, backupID string, opts ...BackupOptions) (map[string]string, error)
 
-	// RegisterBackup 将指定路径的备份文件注册到备份目录库
+	// RegisterBackup 将指定路径的备份文件注册到备份目录库（仅 Oracle/MSSQL 支持）
 	RegisterBackup(ctx context.Context, backupPath string) error
 
-	// UnregisterBackup 从备份目录库中移除指定备份
+	// UnregisterBackup 从备份目录库中移除指定备份（仅 Oracle/MSSQL 支持）
 	UnregisterBackup(ctx context.Context, backupID string) error
 
-	// VerifyBackupStatus 检查备份文件的状态并更新备份目录库
+	// VerifyBackupStatus 检查备份文件的状态并更新备份目录库（仅 Oracle/MSSQL 支持）
 	VerifyBackupStatus(ctx context.Context) error
 
-	// DeleteInvalidBackups 删除无效的备份记录
+	// DeleteInvalidBackups 删除无效的备份记录（仅 Oracle/MSSQL 支持）
 	DeleteInvalidBackups(ctx context.Context, opts ...BackupOptions) error
 
 	// DeleteAllBackups 删除所有备份
@@ -144,6 +148,8 @@ func NewBackup(config *DBConfig) (DatabaseBackup, error) {
 		return NewOracleBackup(config)
 	case "mssql":
 		return NewMSSQLBackup(config)
+	case "postgresql":
+		return NewPostgreSQLBackup(config)
 	default:
 		return nil, errors.New("不支持的数据库类型: " + config.Type)
 	}

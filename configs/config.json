@@ -1,0 +1,54 @@
+{
+  "base_backup_dir": "c:\\work\\database_backup",
+  "databases": {
+    "mysql": {
+      "type": "mysql",
+      "host": "localhost",
+      "port": 3306,
+      "user": "root",
+      "password": "123456",
+      "database": "",
+      "ssl_mode": "",
+      "extra": {
+        "MYSQL_BIN_PATH": "C:\\Program Files\\MySQL\\MySQL Server 8.0\\bin"
+      }
+    },
+    "oracle": {
+      "type": "oracle",
+      "host": "",
+      "port": 0,
+      "user": "",
+      "password": "",
+      "database": "orcl",
+      "ssl_mode": "",
+      "extra": {
+        "ORACLE_HOME": "c:\\windows.x64_193000_db_home",
+        "ORACLE_SID": "ORCL"
+      }
+    },
+    "mssql": {
+      "type": "mssql",
+      "host": "localhost",
+      "port": 1433,
+      "user": "",
+      "password": "",
+      "database": "",
+      "ssl_mode": "",
+      "extra": {
+        "AUTH_TYPE": "windows"
+      }
+    },
+    "postgresql": {
+      "type": "postgresql",
+      "host": "localhost",
+      "port": 5432,
+      "user": "postgres",
+      "password": "123456",
+      "database": "",
+      "ssl_mode": "disable",
+      "extra": {
+        "PG_BIN_PATH": "C:\\Program Files\\PostgreSQL\\18\\bin"
+      }
+    }
+  }
+}

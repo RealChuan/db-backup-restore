@@ -324,10 +324,6 @@ func (m *MSSQLBackup) buildBackupScript(opts BackupOptions, backupDir, databaseN
 		script.WriteString("COMPRESSION, ")
 	}
 
-	if opts.Description != "" {
-		script.WriteString(fmt.Sprintf("DESCRIPTION = N'%s', ", opts.Description))
-	}
-
 	script.WriteString("STATS = 10")
 	return script.String()
 }
@@ -344,8 +340,6 @@ func (m *MSSQLBackup) Restore(ctx context.Context, opts RestoreOptions, callback
 	var backupFile string
 	if opts.BackupTag != "" {
 		backupFile = opts.BackupTag
-	} else if opts.BackupID != "" {
-		backupFile = opts.BackupID
 	}
 
 	if backupFile == "" {
