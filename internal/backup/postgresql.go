@@ -37,18 +37,9 @@ func NewPostgreSQLBackup(config *DBConfig) (*PostgreSQLBackup, error) {
 	pgDumpallPath := "pg_dumpall"
 
 	if val, ok := config.Extra["PG_BIN_PATH"]; ok && val != "" {
-		psqlPath = filepath.Join(val, "psql")
-		if filepath.Ext(psqlPath) == "" {
-			psqlPath += ".exe"
-		}
-		pgDumpPath = filepath.Join(val, "pg_dump")
-		if filepath.Ext(pgDumpPath) == "" {
-			pgDumpPath += ".exe"
-		}
-		pgDumpallPath = filepath.Join(val, "pg_dumpall")
-		if filepath.Ext(pgDumpallPath) == "" {
-			pgDumpallPath += ".exe"
-		}
+		psqlPath = utils.AddExeExt(filepath.Join(val, "psql"))
+		pgDumpPath = utils.AddExeExt(filepath.Join(val, "pg_dump"))
+		pgDumpallPath = utils.AddExeExt(filepath.Join(val, "pg_dumpall"))
 	}
 
 	env := []string{
@@ -72,21 +63,21 @@ func NewPostgreSQLBackup(config *DBConfig) (*PostgreSQLBackup, error) {
 	}, nil
 }
 
-// buildDumpArgs 构建 pg_dump 命令参数
-func (p *PostgreSQLBackup) buildDumpArgs(opts BackupOptions) []string {
+// buildDumpCommandArgs 构建 pg_dump 命令参数
+func (p *PostgreSQLBackup) buildDumpCommandArgs(opts BackupOptions) []string {
 	var args []string
 
 	if opts.Type == BackupPhysical {
 		args = append(args, "-F", "d")
-		if opts.Compression {
+		if opts.EnableCompression {
 			level := opts.CompressionLevel
 			if level <= 0 || level > 9 {
 				level = 6
 			}
 			args = append(args, "-Z", strconv.Itoa(level))
 		}
-		if opts.Parallelism > 1 {
-			args = append(args, "-j", strconv.Itoa(opts.Parallelism))
+		if opts.ParallelWorkers > 1 {
+			args = append(args, "-j", strconv.Itoa(opts.ParallelWorkers))
 		}
 	} else {
 		args = append(args, "-F", "p")
@@ -97,36 +88,38 @@ func (p *PostgreSQLBackup) buildDumpArgs(opts BackupOptions) []string {
 	return args
 }
 
-// buildRestoreArgs 构建 psql 命令参数（用于恢复）
-func (p *PostgreSQLBackup) buildRestoreArgs() []string {
-	var args []string
-	return args
+// buildRestoreCommandArgs 构建 psql 命令参数（用于恢复）
+// PostgreSQL 通过环境变量传递连接参数，此函数返回空列表
+func (p *PostgreSQLBackup) buildRestoreCommandArgs() []string {
+	return nil
 }
 
 // execSQL 执行 SQL 命令（通过 psql）
-func (p *PostgreSQLBackup) execSQL(ctx context.Context, sqlText string) (string, error) {
-	utils.Infof("\n========== SQL 命令开始 ==========\n%s\n========== SQL 命令结束 ==========", sqlText)
-
-	args := []string{"-c", sqlText}
+func (p *PostgreSQLBackup) execSQL(ctx context.Context, sqlStatement string) (string, error) {
+	args := []string{"-c", sqlStatement}
 	if p.config.Database != "" {
 		args = append(args, "-d", p.config.Database)
 	}
+	cmdStr := p.psqlPath + " " + strings.Join(args, " ")
+	utils.LogCommandInfo(cmdStr)
 
 	cmd := exec.CommandContext(ctx, p.psqlPath, args...)
 	cmd.Env = append(os.Environ(), p.env...)
 
 	output, err := utils.ExecCommandWithEncoding(ctx, cmd, false)
 
-	utils.Infof("\n========== SQL 执行输出开始 ==========\n%s\n========== SQL 执行输出结束 ==========", output)
 	if err != nil {
+		utils.LogCommand(cmdStr, output, true)
 		return output, fmt.Errorf("psql 执行失败: %w", err)
 	}
+	utils.LogCommand(cmdStr, output, false)
 	return output, nil
 }
 
 // execPgDump 执行 pg_dump 命令
 func (p *PostgreSQLBackup) execPgDump(ctx context.Context, args []string, outputFile string) error {
-	utils.Infof("\n========== pg_dump 命令开始 ==========\n%s %s\n========== pg_dump 命令结束 ==========", p.pgDumpPath, strings.Join(args, " "))
+	cmdStr := p.pgDumpPath + " " + strings.Join(args, " ")
+	utils.LogCommandInfo(cmdStr)
 
 	cmd := exec.CommandContext(ctx, p.pgDumpPath, args...)
 	cmd.Env = append(os.Environ(), p.env...)
@@ -158,13 +151,15 @@ func (p *PostgreSQLBackup) execPgDump(ctx context.Context, args []string, output
 	}
 
 	stderrBytes, _ := io.ReadAll(stderr)
+	stderrOutput := string(stderrBytes)
 
 	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("pg_dump 执行失败: %w, stderr: %s", err, string(stderrBytes))
+		utils.LogCommand(cmdStr, stderrOutput, true)
+		return fmt.Errorf("pg_dump 执行失败: %w, stderr: %s", err, stderrOutput)
 	}
 
-	if string(stderrBytes) != "" {
-		utils.Warnf("pg_dump 警告: %s", string(stderrBytes))
+	if stderrOutput != "" {
+		utils.LogCommand(cmdStr, stderrOutput, false)
 	}
 
 	utils.Infof("pg_dump 完成，输出: %s", outputFile)
@@ -173,19 +168,20 @@ func (p *PostgreSQLBackup) execPgDump(ctx context.Context, args []string, output
 
 // execPsqlFromFile 从文件执行 SQL（用于还原）
 func (p *PostgreSQLBackup) execPsqlFromFile(ctx context.Context, databaseName string, inputFile io.Reader) (string, error) {
-	utils.Infof("\n========== PostgreSQL 还原开始 ==========\n数据库: %s\n========== PostgreSQL 还原命令结束 ==========", databaseName)
-
 	args := []string{"-d", databaseName}
+	cmdStr := p.psqlPath + " " + strings.Join(args, " ")
+	utils.LogCommandInfo(cmdStr)
 
 	cmd := exec.CommandContext(ctx, p.psqlPath, args...)
 	cmd.Env = append(os.Environ(), p.env...)
 	cmd.Stdin = inputFile
 	output, err := utils.ExecCommandWithEncoding(ctx, cmd, false)
 
-	utils.Infof("\n========== PostgreSQL 还原输出开始 ==========\n%s\n========== PostgreSQL 还原输出结束 ==========", output)
 	if err != nil {
+		utils.LogCommand(cmdStr, output, true)
 		return output, fmt.Errorf("psql 还原失败: %w", err)
 	}
+	utils.LogCommand(cmdStr, output, false)
 	return output, nil
 }
 
@@ -222,22 +218,6 @@ func (p *PostgreSQLBackup) Backup(ctx context.Context, opts BackupOptions, callb
 	return p.backupMultipleDatabases(ctx, opts, backupDir, databases, callback)
 }
 
-// parseDatabaseNames 解析数据库名称（支持逗号分隔的多个数据库）
-func (p *PostgreSQLBackup) parseDatabaseNames(databaseName string) []string {
-	if databaseName == "" || databaseName == "all" {
-		return nil
-	}
-
-	var names []string
-	for _, name := range strings.Split(databaseName, ",") {
-		name = strings.TrimSpace(name)
-		if name != "" {
-			names = append(names, name)
-		}
-	}
-	return names
-}
-
 // backupSingleDatabase 备份单个数据库
 func (p *PostgreSQLBackup) backupSingleDatabase(ctx context.Context, opts BackupOptions, backupDir, databaseName string, callback ProgressCallback) (*BackupResult, error) {
 	startTime := time.Now()
@@ -263,7 +243,7 @@ func (p *PostgreSQLBackup) backupSingleDatabase(ctx context.Context, opts Backup
 	var args []string
 
 	if opts.Type == BackupLogical || opts.Type == BackupFull || opts.Type == BackupPhysical {
-		args = p.buildDumpArgs(opts)
+		args = p.buildDumpCommandArgs(opts)
 		args = append(args, "-d", databaseName, "-f", backupPath)
 
 		if opts.Type == BackupPhysical {
@@ -431,12 +411,12 @@ func (p *PostgreSQLBackup) Restore(ctx context.Context, opts RestoreOptions, cal
 	}
 
 	var backupFile string
-	if opts.BackupTag != "" {
-		backupFile = opts.BackupTag
+	if opts.BackupIdentifier != "" {
+		backupFile = opts.BackupIdentifier
 	}
 
 	if backupFile == "" {
-		result.Error = errors.New("必须通过 -backup-tag 参数指定备份文件路径")
+		result.Error = errors.New("必须通过 --backup-identifier 参数指定备份文件路径")
 		return result, result.Error
 	}
 
@@ -445,7 +425,7 @@ func (p *PostgreSQLBackup) Restore(ctx context.Context, opts RestoreOptions, cal
 		return result, result.Error
 	}
 
-	databaseName := opts.TargetDB
+	databaseName := opts.TargetDatabaseName
 	if databaseName == "" {
 		databaseName = p.extractDatabaseName(backupFile)
 	}
@@ -559,12 +539,6 @@ func (p *PostgreSQLBackup) DeleteBackup(ctx context.Context, identifier string, 
 	return nil
 }
 
-// ValidateBackup 验证备份有效性
-func (p *PostgreSQLBackup) ValidateBackup(ctx context.Context, backupID string, opts ...BackupOptions) error {
-	utils.Warnf("PostgreSQL 逻辑备份文件无法完全验证有效性")
-	return nil
-}
-
 // GetBackupInfo 获取指定备份的详细信息
 func (p *PostgreSQLBackup) GetBackupInfo(ctx context.Context, backupID string, opts ...BackupOptions) (map[string]string, error) {
 	if backupID == "" {
@@ -596,30 +570,6 @@ func (p *PostgreSQLBackup) GetBackupInfo(ctx context.Context, backupID string, o
 	return result, nil
 }
 
-// RegisterBackup 将指定路径的备份文件注册到备份目录库
-func (p *PostgreSQLBackup) RegisterBackup(ctx context.Context, backupPath string) error {
-	utils.Warnf("PostgreSQL 不使用备份目录库，备份文件直接存储在文件系统中")
-	return nil
-}
-
-// UnregisterBackup 从备份目录库中移除指定备份
-func (p *PostgreSQLBackup) UnregisterBackup(ctx context.Context, backupID string) error {
-	utils.Warnf("PostgreSQL 不支持取消注册备份功能")
-	return nil
-}
-
-// VerifyBackupStatus 检查备份文件的状态并更新备份目录库
-func (p *PostgreSQLBackup) VerifyBackupStatus(ctx context.Context) error {
-	utils.Warnf("PostgreSQL 不支持检查备份状态功能")
-	return nil
-}
-
-// DeleteInvalidBackups 删除无效的备份记录
-func (p *PostgreSQLBackup) DeleteInvalidBackups(ctx context.Context, opts ...BackupOptions) error {
-	utils.Warnf("PostgreSQL 逻辑备份文件无法验证有效性，跳过删除无效备份操作")
-	return nil
-}
-
 // DeleteAllBackups 删除所有备份
 func (p *PostgreSQLBackup) DeleteAllBackups(ctx context.Context, opts ...BackupOptions) error {
 	backupDir := p.getBackupDir(opts)
@@ -640,15 +590,15 @@ func (p *PostgreSQLBackup) DeleteAllBackups(ctx context.Context, opts ...BackupO
 	return nil
 }
 
-// getBackupDir 从选项中获取备份目录
-func (p *PostgreSQLBackup) getBackupDir(opts []BackupOptions) string {
-	if len(opts) > 0 && opts[0].TargetPath != "" {
-		return opts[0].TargetPath
-	}
-	return ""
-}
-
-// Close 释放资源
-func (p *PostgreSQLBackup) Close() error {
-	return nil
+// init 自动注册 PostgreSQL 驱动
+func init() {
+	RegisterDriver(DriverMetadata{
+		Name:                 "postgresql",
+		Version:              "1.0.0",
+		Description:          "PostgreSQL 数据库备份驱动，支持 pg_dump 逻辑备份和目录格式物理备份",
+		SupportedActions:     []string{"backup", "restore", "list", "delete", "info", "delete-all"},
+		SupportedBackupTypes: []BackupType{BackupFull, BackupLogical, BackupPhysical},
+	}, func(config *DBConfig) (DatabaseBackup, error) {
+		return NewPostgreSQLBackup(config)
+	})
 }

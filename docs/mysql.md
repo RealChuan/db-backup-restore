@@ -125,7 +125,7 @@ rm /backup/*.sql*
 
 | Go 方法                      | 对应的底层命令                                                                 |
 | ---------------------------- | ------------------------------------------------------------------------------ |
-| `Backup()`                   | `mysqldump -h <host> -P <port> -u <user> -p<password> [--compress] [--single-transaction] <database>` |
+| `Backup()`                   | `mysqldump -h <host> -P <port> -u <user> -p<password> [--compression-algorithms=zlib] [--single-transaction] <database>` |
 | `Restore()`                  | `mysql -h <host> -P <port> -u <user> -p<password> <database> < <backup_file>`  |
 | `ListBackups()`              | 遍历文件系统，查找 `*.sql*` 文件                                                |
 | `DeleteBackup(backupPath)`   | `rm <backup_path>`                                                              |

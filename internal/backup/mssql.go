@@ -60,14 +60,14 @@ func (m *MSSQLBackup) buildConnectionString() string {
 }
 
 // execSQL 执行 SQL 命令（通过 sqlcmd）
-func (m *MSSQLBackup) execSQL(ctx context.Context, sqlText string) (string, error) {
-	utils.Infof("\n========== SQL 命令开始 ==========\n%s\n========== SQL 命令结束 ==========", sqlText)
+func (m *MSSQLBackup) execSQL(ctx context.Context, sqlStatement string) (string, error) {
+	utils.Infof("\n========== SQL 命令开始 ==========\n%s\n========== SQL 命令结束 ==========", sqlStatement)
 
 	var cmd *exec.Cmd
 	if m.isWindowsAuth() {
-		cmd = exec.CommandContext(ctx, "sqlcmd", "-S", m.buildServerArg(), "-E", "-C", "-Q", sqlText)
+		cmd = exec.CommandContext(ctx, "sqlcmd", "-S", m.buildServerArg(), "-E", "-C", "-Q", sqlStatement)
 	} else {
-		cmd = exec.CommandContext(ctx, "sqlcmd", "-S", m.buildServerArg(), "-U", m.config.User, "-P", m.config.Password, "-C", "-Q", sqlText)
+		cmd = exec.CommandContext(ctx, "sqlcmd", "-S", m.buildServerArg(), "-U", m.config.User, "-P", m.config.Password, "-C", "-Q", sqlStatement)
 	}
 	if m.config.Database != "" {
 		cmd.Args = append(cmd.Args, "-d", m.config.Database)
@@ -138,22 +138,6 @@ func (m *MSSQLBackup) Backup(ctx context.Context, opts BackupOptions, callback P
 	}
 
 	return m.backupMultipleDatabases(ctx, opts, backupDir, databases, callback)
-}
-
-// parseDatabaseNames 解析数据库名称（支持逗号分隔的多个数据库）
-func (m *MSSQLBackup) parseDatabaseNames(databaseName string) []string {
-	if databaseName == "" || databaseName == "all" {
-		return nil
-	}
-
-	var names []string
-	for _, name := range strings.Split(databaseName, ",") {
-		name = strings.TrimSpace(name)
-		if name != "" {
-			names = append(names, name)
-		}
-	}
-	return names
 }
 
 // backupSingleDatabase 备份单个数据库
@@ -320,7 +304,7 @@ func (m *MSSQLBackup) buildBackupScript(opts BackupOptions, backupDir, databaseN
 	var script strings.Builder
 	script.WriteString(fmt.Sprintf("BACKUP DATABASE [%s] TO DISK = N'%s' WITH ", databaseName, backupPath))
 
-	if opts.Compression {
+	if opts.EnableCompression {
 		script.WriteString("COMPRESSION, ")
 	}
 
@@ -338,16 +322,16 @@ func (m *MSSQLBackup) Restore(ctx context.Context, opts RestoreOptions, callback
 	}
 
 	var backupFile string
-	if opts.BackupTag != "" {
-		backupFile = opts.BackupTag
+	if opts.BackupIdentifier != "" {
+		backupFile = opts.BackupIdentifier
 	}
 
 	if backupFile == "" {
-		result.Error = errors.New("必须通过 -backup-tag 参数指定备份文件路径")
+		result.Error = errors.New("必须通过 --backup-identifier 参数指定备份文件路径")
 		return result, result.Error
 	}
 
-	databaseName := opts.TargetDB
+	databaseName := opts.TargetDatabaseName
 	if databaseName == "" {
 		var err error
 		databaseName, err = m.getDatabaseNameFromBackup(ctx, backupFile)
@@ -423,8 +407,8 @@ func (m *MSSQLBackup) buildRestoreScript(opts RestoreOptions, databaseName, back
 		script.WriteString("REPLACE, ")
 	}
 
-	if !opts.PointInTime.IsZero() {
-		timeStr := opts.PointInTime.Format("2006-01-02 15:04:05")
+	if !opts.RecoveryPointInTime.IsZero() {
+		timeStr := opts.RecoveryPointInTime.Format("2006-01-02 15:04:05")
 		script.WriteString(fmt.Sprintf("STOPAT = '%s', ", timeStr))
 	}
 
@@ -795,4 +779,17 @@ DELETE FROM msdb.dbo.backupmediaset;`
 // Close 释放资源
 func (m *MSSQLBackup) Close() error {
 	return nil
+}
+
+// init 自动注册 MSSQL 驱动
+func init() {
+	RegisterDriver(DriverMetadata{
+		Name:                 "mssql",
+		Version:              "1.0.0",
+		Description:          "SQL Server 数据库备份驱动，支持 sqlcmd 命令备份",
+		SupportedActions:     []string{"backup", "restore", "list", "delete", "validate", "info", "register", "unregister", "verify-status", "delete-invalid", "delete-all"},
+		SupportedBackupTypes: []BackupType{BackupFull},
+	}, func(config *DBConfig) (DatabaseBackup, error) {
+		return NewMSSQLBackup(config)
+	})
 }

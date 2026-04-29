@@ -1,5 +1,16 @@
 {
   "base_backup_dir": "c:\\work\\database_backup",
+  "log": {
+    "level": "info",
+    "output": "console",
+    "format": "text",
+    "log_file": "logs/app.log",
+    "audit_log_file": "logs/audit.log",
+    "max_file_size": 100,
+    "max_backups": 10,
+    "enable_colors": true,
+    "add_caller": true
+  },
   "databases": {
     "mysql": {
       "type": "mysql",

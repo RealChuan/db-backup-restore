@@ -159,7 +159,8 @@ rm /backup/*.sql*
 | `Backup(BackupLogical)`      | `pg_dump -h <host> -p <port> -U <user> -d <database> -F p --clean --if-exists -f <path>` |
 | `Backup(BackupFull)`         | `pg_dump -h <host> -p <port> -U <user> -d <database> -F p --clean --if-exists -f <path>` |
 | `Backup(BackupPhysical)`     | `pg_dump -h <host> -p <port> -U <user> -d <database> -F d [-Z <level>] [-j <parallel>] -f <path>` |
-| `Restore()`                  | `psql -h <host> -p <port> -U <user> -d <database> -f <backup_file>`            |
+| `Restore()`                  | `psql -h <host> -p <port> -U <user> -d <database> -f <backup_file>`（仅支持逻辑备份的 SQL 文件） |
+| `Restore(BackupPhysical)`    | **代码未实现**（物理备份需使用 `pg_restore -h <host> -p <port> -U <user> -d <database> -F d <backup_dir>` 手动执行） |
 | `ListBackups()`              | 遍历文件系统，查找 `*.sql*` 文件                                                |
 | `DeleteBackup(backupPath)`   | `rm <backup_path>`                                                              |
 | `DeleteAllBackups()`         | `rm *.sql*`                                                                     |

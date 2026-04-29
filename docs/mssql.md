@@ -299,8 +299,8 @@ DELETE FROM msdb.dbo.backupmediaset;
 | `GetBackupInfo(backupID)`    | `SELECT * FROM msdb.dbo.backupset WHERE backup_set_id = <id>;`                 |
 | `RegisterBackup(backupPath)` | `EXEC msdb.dbo.sp_add_backup_filehistory @file_name = N'<path>';`              |
 | `UnregisterBackup(backupID)` | `EXEC msdb.dbo.sp_delete_backuphistory @backup_set_id = <id>;`                 |
-| `VerifyBackupStatus()`       | 遍历所有备份执行 `RESTORE VERIFYONLY`                                          |
-| `DeleteInvalidBackups()`     | `DELETE FROM msdb.dbo.backupset WHERE is_valid = 0;`                           |
+| `VerifyBackupStatus()`       | 遍历所有备份执行 `RESTORE VERIFYONLY`，验证失败则删除对应记录                    |
+| `DeleteInvalidBackups()`     | 查询 msdb 备份记录，检查文件系统中对应文件是否存在，不存在则删除记录              |
 | `DeleteAllBackups()`         | 删除 msdb 中所有备份相关表（restorefilegroup、restorefile、restorehistory 等） |
 
 ---
