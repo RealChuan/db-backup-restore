@@ -298,7 +298,16 @@ func runValidateBackup(ctx context.Context) error {
 	defer db.Close()
 
 	backupTarget := filepath.Join(appConfig.BaseBackupDir, databaseType, "backup")
-	backupOpts := backup.BackupOptions{TargetPath: backupTarget}
+
+	backupTypeVal, err := backup.ParseBackupType(backupType)
+	if err != nil {
+		return fmt.Errorf("无效的备份类型: %s", backupType)
+	}
+
+	backupOpts := backup.BackupOptions{
+		TargetPath: backupTarget,
+		Type:       backupTypeVal,
+	}
 
 	if err := db.ValidateBackup(ctx, validateID, backupOpts); err != nil {
 		utils.AuditLog("validate", databaseType, "failed", "id="+validateID, "error="+err.Error())

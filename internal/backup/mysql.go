@@ -1,15 +1,11 @@
 package backup
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -46,141 +42,16 @@ func NewMySQLBackup(config *DBConfig) (*MySQLBackup, error) {
 	}, nil
 }
 
-// buildDumpCommandArgs 构建 mysqldump 命令参数
-func (m *MySQLBackup) buildDumpCommandArgs(opts BackupOptions) []string {
-	var args []string
-
-	if m.config.Host != "" {
-		args = append(args, "-h", m.config.Host)
-	}
-	if m.config.Port != 0 {
-		args = append(args, "-P", strconv.Itoa(m.config.Port))
-	}
-	if m.config.User != "" {
-		args = append(args, "-u", m.config.User)
-	}
-	if m.config.Password != "" {
-		args = append(args, "-p"+m.config.Password)
-	}
-
-	if opts.EnableCompression {
-		args = append(args, "--compression-algorithms=zlib")
-	}
-
-	if opts.Type == BackupLogical {
-		args = append(args, "--single-transaction")
-		args = append(args, "--quick")
-		args = append(args, "--lock-tables=false")
-	}
-
-	return args
-}
-
-// buildRestoreCommandArgs 构建 mysql 命令连接参数（用于恢复）
-// 返回包含主机、端口、用户名、密码等连接信息的参数列表
-func (m *MySQLBackup) buildRestoreCommandArgs() []string {
-	var args []string
-
-	if m.config.Host != "" {
-		args = append(args, "-h", m.config.Host)
-	}
-	if m.config.Port != 0 {
-		args = append(args, "-P", strconv.Itoa(m.config.Port))
-	}
-	if m.config.User != "" {
-		args = append(args, "-u", m.config.User)
-	}
-	if m.config.Password != "" {
-		args = append(args, "-p"+m.config.Password)
-	}
-
-	return args
-}
-
-// execSQL 执行 SQL 命令（通过 mysql）
-func (m *MySQLBackup) execSQL(ctx context.Context, sqlStatement string) (string, error) {
-	cmdStr := m.mysqlPath + " " + strings.Join(m.buildRestoreCommandArgs(), " ") + " -e " + sqlStatement
-	utils.LogCommandInfo(cmdStr)
-
-	args := m.buildRestoreCommandArgs()
-	args = append(args, "-e", sqlStatement)
-
-	cmd := exec.CommandContext(ctx, m.mysqlPath, args...)
-	output, err := utils.ExecCommand(ctx, cmd)
-
-	if err != nil {
-		utils.LogCommand(cmdStr, output, true)
-		return output, fmt.Errorf("mysql 执行失败: %w", err)
-	}
-	utils.LogCommand(cmdStr, output, false)
-	return output, nil
-}
-
-// execMySQLDump 执行 mysqldump 命令，直接写入文件
-func (m *MySQLBackup) execMySQLDump(ctx context.Context, args []string, outputFile string) error {
-	cmdStr := m.mysqldumpPath + " " + strings.Join(args, " ")
-	utils.LogCommandInfo(cmdStr)
-
-	cmd := exec.CommandContext(ctx, m.mysqldumpPath, args...)
-
-	file, err := os.Create(outputFile)
-	if err != nil {
-		return fmt.Errorf("创建备份文件失败: %w", err)
-	}
-	defer file.Close()
-
-	cmd.Stdout = file
-
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return err
-	}
-
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-
-	stderrBytes, _ := io.ReadAll(stderr)
-
-	stderrOutput, _ := utils.ConvertGBKToUTF8(stderrBytes)
-	if err := cmd.Wait(); err != nil {
-		utils.LogCommand(cmdStr, stderrOutput, true)
-		return fmt.Errorf("mysqldump 执行失败: %w, stderr: %s", err, stderrOutput)
-	}
-
-	if stderrOutput != "" {
-		utils.LogCommand(cmdStr, stderrOutput, false)
-	}
-
-	utils.Infof("mysqldump 完成，输出文件: %s", outputFile)
-	return nil
-}
-
-// execMySQLFromFile 从文件执行 SQL（用于还原）
-func (m *MySQLBackup) execMySQLFromFile(ctx context.Context, databaseName string, inputFile io.Reader) (string, error) {
-	args := m.buildRestoreCommandArgs()
-	args = append(args, databaseName)
-	cmdStr := m.mysqlPath + " " + strings.Join(args, " ")
-	utils.LogCommandInfo(cmdStr)
-
-	cmd := exec.CommandContext(ctx, m.mysqlPath, args...)
-	cmd.Stdin = inputFile
-	output, err := utils.ExecCommand(ctx, cmd)
-
-	if err != nil {
-		utils.LogCommand(cmdStr, output, true)
-		return output, fmt.Errorf("mysql 还原失败: %w", err)
-	}
-	utils.LogCommand(cmdStr, output, false)
-	return output, nil
-}
-
-// Backup 执行 MySQL 备份
+// Backup 执行 MySQL 备份（根据类型调用不同实现）
 func (m *MySQLBackup) Backup(ctx context.Context, opts BackupOptions, callback ProgressCallback) (*BackupResult, error) {
 	startTime := time.Now()
 	result := &BackupResult{
 		StartTime: startTime,
 		Metadata:  make(map[string]string),
+	}
+
+	if opts.Mode == BackupModeIncremental || opts.Mode == BackupModeDifferential {
+		utils.Infof("MySQL 不支持增量/差异备份模式，将使用全量备份")
 	}
 
 	backupDir := opts.TargetPath
@@ -194,216 +65,60 @@ func (m *MySQLBackup) Backup(ctx context.Context, opts BackupOptions, callback P
 	}
 
 	databaseName := m.config.Database
-
 	databases := m.parseDatabaseNames(databaseName)
 
-	if len(databases) == 0 {
-		return m.backupAllDatabases(ctx, opts, backupDir, callback)
-	}
-
-	if len(databases) == 1 {
-		return m.backupSingleDatabase(ctx, opts, backupDir, databases[0], callback)
-	}
-
-	return m.backupMultipleDatabases(ctx, opts, backupDir, databases, callback)
-}
-
-// backupSingleDatabase 备份单个数据库
-func (m *MySQLBackup) backupSingleDatabase(ctx context.Context, opts BackupOptions, backupDir, databaseName string, callback ProgressCallback) (*BackupResult, error) {
-	startTime := time.Now()
-	result := &BackupResult{
-		StartTime: startTime,
-		Metadata:  make(map[string]string),
-	}
-
-	if callback != nil {
-		callback(0, fmt.Sprintf("开始备份数据库 %s...", databaseName))
-	}
-
-	backupFileName := fmt.Sprintf("%s_%s.sql", databaseName, time.Now().Format("20060102_150405"))
-	backupPath := filepath.Join(backupDir, backupFileName)
-
-	var args []string
-
-	if opts.Type == BackupLogical || opts.Type == BackupFull || opts.Type == BackupPhysical {
-		args = m.buildDumpCommandArgs(opts)
-		args = append(args, databaseName)
-
-		if err := m.execMySQLDump(ctx, args, backupPath); err != nil {
-			result.Error = fmt.Errorf("备份失败: %w", err)
-			return result, result.Error
+	switch opts.Type {
+	case BackupTypePhysical:
+		if len(databases) > 0 {
+			utils.Warnf("物理备份将备份整个 MySQL 实例，指定的数据库列表 [%s] 将被忽略", strings.Join(databases, ", "))
 		}
-	} else {
-		result.Error = errors.New("MySQL 仅支持 full、logical 和 physical 备份类型")
+		return m.backupPhysical(ctx, backupDir, callback)
+
+	case BackupTypeLogical:
+		if len(databases) == 0 {
+			return m.backupAllDatabasesLogical(ctx, backupDir, callback)
+		}
+		if len(databases) == 1 {
+			return m.backupSingleDatabaseLogical(ctx, backupDir, databases[0], callback)
+		}
+		return m.backupMultipleDatabasesLogical(ctx, backupDir, databases, callback)
+
+	default:
+		result.Error = errors.New("MySQL 仅支持 logical 和 physical 备份类型")
 		return result, result.Error
 	}
-
-	if callback != nil {
-		callback(100, "备份完成")
-	}
-
-	if info, err := os.Stat(backupPath); err == nil {
-		result.BackupFile = backupPath
-		result.BackupSize = info.Size()
-	} else {
-		result.BackupFile = backupPath
-	}
-
-	result.Duration = time.Since(startTime)
-	result.EndTime = time.Now()
-	result.Success = true
-
-	return result, nil
 }
 
-// backupMultipleDatabases 备份多个数据库
-func (m *MySQLBackup) backupMultipleDatabases(ctx context.Context, opts BackupOptions, backupDir string, databases []string, callback ProgressCallback) (*BackupResult, error) {
-	startTime := time.Now()
-	result := &BackupResult{
-		StartTime: startTime,
-		Metadata:  make(map[string]string),
-	}
-
-	var backupFiles []string
-	var totalSize int64
-
-	if callback != nil {
-		callback(0, fmt.Sprintf("开始备份 %d 个数据库...", len(databases)))
-	}
-
-	for i, dbName := range databases {
-		if callback != nil {
-			percent := float64(i) / float64(len(databases)) * 100
-			callback(percent, fmt.Sprintf("正在备份数据库 %s (%d/%d)", dbName, i+1, len(databases)))
-		}
-
-		singleResult, err := m.backupSingleDatabase(ctx, opts, backupDir, dbName, nil)
-		if err != nil {
-			utils.Warnf("备份数据库 %s 失败: %v, 继续备份其他数据库", dbName, err)
-			continue
-		}
-
-		backupFiles = append(backupFiles, singleResult.BackupFile)
-		totalSize += singleResult.BackupSize
-	}
-
-	if callback != nil {
-		callback(100, "备份完成")
-	}
-
-	if len(backupFiles) == 0 {
-		result.Error = errors.New("没有成功备份任何数据库")
-		return result, result.Error
-	}
-
-	result.BackupFile = strings.Join(backupFiles, ",")
-	result.BackupSize = totalSize
-	result.Duration = time.Since(startTime)
-	result.EndTime = time.Now()
-	result.Success = true
-
-	return result, nil
-}
-
-// backupAllDatabases 备份所有数据库
-func (m *MySQLBackup) backupAllDatabases(ctx context.Context, opts BackupOptions, backupDir string, callback ProgressCallback) (*BackupResult, error) {
-	databases, err := m.getAllDatabases(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("获取数据库列表失败: %w", err)
-	}
-
-	if len(databases) == 0 {
-		return nil, errors.New("未找到数据库")
-	}
-
-	return m.backupMultipleDatabases(ctx, opts, backupDir, databases, callback)
-}
-
-// getAllDatabases 获取所有数据库（排除系统数据库）
-func (m *MySQLBackup) getAllDatabases(ctx context.Context) ([]string, error) {
-	output, err := m.execSQL(ctx, "SHOW DATABASES")
-	if err != nil {
-		return nil, fmt.Errorf("获取数据库列表失败: %w", err)
-	}
-
-	var databases []string
-	scanner := bufio.NewScanner(strings.NewReader(output))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || line == "Database" {
-			continue
-		}
-		if line == "information_schema" || line == "mysql" || line == "performance_schema" || line == "sys" {
-			continue
-		}
-		utils.Infof("发现数据库: |%s|", line)
-
-		databases = append(databases, line)
-	}
-
-	return databases, nil
-}
-
-// Restore 执行 MySQL 还原
+// Restore 执行 MySQL 还原（根据备份类型调用不同实现）
 func (m *MySQLBackup) Restore(ctx context.Context, opts RestoreOptions, callback ProgressCallback) (*RestoreResult, error) {
-	startTime := time.Now()
-	result := &RestoreResult{}
-
-	if callback != nil {
-		callback(0, "开始执行还原...")
+	backupIdentifier := opts.BackupIdentifier
+	if backupIdentifier == "" {
+		return nil, errors.New("必须通过 --backup-identifier 参数指定备份文件或目录路径")
 	}
 
-	var backupFile string
-	if opts.BackupIdentifier != "" {
-		backupFile = opts.BackupIdentifier
-	}
-
-	if backupFile == "" {
-		result.Error = errors.New("必须通过 --backup-identifier 参数指定备份文件路径")
-		return result, result.Error
-	}
-
-	if _, err := os.Stat(backupFile); os.IsNotExist(err) {
-		result.Error = fmt.Errorf("备份文件不存在: %s", backupFile)
-		return result, result.Error
-	}
-
-	databaseName := opts.TargetDatabaseName
-	if databaseName == "" {
-		databaseName = m.extractDatabaseName(backupFile)
-	}
-
-	inputFile, err := os.Open(backupFile)
+	info, err := os.Stat(backupIdentifier)
 	if err != nil {
-		result.Error = fmt.Errorf("打开备份文件失败: %w", err)
-		return result, result.Error
-	}
-	defer inputFile.Close()
-
-	_, err = m.execMySQLFromFile(ctx, databaseName, inputFile)
-	if err != nil {
-		result.Error = fmt.Errorf("还原失败: %w", err)
-		return result, result.Error
+		return nil, fmt.Errorf("备份文件/目录不存在: %s", backupIdentifier)
 	}
 
-	if callback != nil {
-		callback(100, "还原完成")
+	// 检查备份类型是否与实际数据匹配
+	isDir := info.IsDir()
+	expectedLogical := opts.BackupType == BackupTypeLogical || opts.BackupType == "" // 默认逻辑备份
+	expectedPhysical := opts.BackupType == BackupTypePhysical
+
+	if expectedLogical && isDir {
+		return nil, fmt.Errorf("备份类型不匹配：指定为逻辑备份，但提供的是目录: %s", backupIdentifier)
+	}
+	if expectedPhysical && !isDir {
+		return nil, fmt.Errorf("备份类型不匹配：指定为物理备份，但提供的是文件: %s", backupIdentifier)
 	}
 
-	result.Duration = time.Since(startTime)
-	result.Success = true
-
-	return result, nil
-}
-
-// extractDatabaseName 从备份文件名中提取数据库名
-func (m *MySQLBackup) extractDatabaseName(backupFile string) string {
-	baseName := filepath.Base(backupFile)
-	re := regexp.MustCompile(`^(.+)_(\d{8})_(\d{6})\.sql$`)
-	if matches := re.FindStringSubmatch(baseName); len(matches) > 1 {
-		return matches[1]
+	// 根据实际数据类型调用对应实现
+	if isDir {
+		return m.restorePhysical(ctx, opts, callback)
 	}
-	return filepath.Base(backupFile)
+
+	return m.restoreLogical(ctx, opts, callback)
 }
 
 // ListBackups 列出所有备份（从文件系统）
@@ -413,12 +128,13 @@ func (m *MySQLBackup) ListBackups(ctx context.Context, opts ...BackupOptions) ([
 		return nil, errors.New("必须通过 opts.TargetPath 指定备份目录")
 	}
 
+	var backups []BackupInfo
+
 	files, err := filepath.Glob(filepath.Join(backupDir, "*.sql*"))
 	if err != nil {
-		return nil, fmt.Errorf("列出备份失败: %w", err)
+		return nil, fmt.Errorf("列出逻辑备份失败: %w", err)
 	}
 
-	var backups []BackupInfo
 	for _, file := range files {
 		info, err := os.Stat(file)
 		if err != nil {
@@ -430,6 +146,28 @@ func (m *MySQLBackup) ListBackups(ctx context.Context, opts ...BackupOptions) ([
 			CompletionTime: info.ModTime(),
 			Size:           info.Size(),
 			BackupPath:     file,
+			BackupType:     "LOGICAL",
+		}
+		backups = append(backups, bi)
+	}
+
+	dirs, err := filepath.Glob(filepath.Join(backupDir, "*_physical"))
+	if err != nil {
+		return nil, fmt.Errorf("列出物理备份失败: %w", err)
+	}
+
+	for _, dir := range dirs {
+		info, err := os.Stat(dir)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+
+		bi := BackupInfo{
+			BackupID:       filepath.Base(dir),
+			CompletionTime: info.ModTime(),
+			Size:           utils.GetDirSize(dir),
+			BackupPath:     dir,
+			BackupType:     "PHYSICAL",
 		}
 		backups = append(backups, bi)
 	}
@@ -450,10 +188,16 @@ func (m *MySQLBackup) DeleteBackup(ctx context.Context, identifier string, opts 
 		backupPath = filepath.Join(backupDir, identifier)
 	}
 
-	if err := os.Remove(backupPath); err != nil {
-		return fmt.Errorf("删除备份失败: %w", err)
+	info, err := os.Stat(backupPath)
+	if err != nil {
+		return fmt.Errorf("备份不存在: %w", err)
 	}
-	return nil
+
+	if info.IsDir() {
+		return os.RemoveAll(backupPath)
+	}
+
+	return os.Remove(backupPath)
 }
 
 // GetBackupInfo 获取指定备份的详细信息
@@ -482,7 +226,13 @@ func (m *MySQLBackup) GetBackupInfo(ctx context.Context, backupID string, opts .
 	result["path"] = backupPath
 	result["size"] = strconv.FormatInt(info.Size(), 10)
 	result["mod_time"] = info.ModTime().Format(time.RFC3339)
-	result["backup_type"] = "LOGICAL"
+
+	if info.IsDir() {
+		result["backup_type"] = "PHYSICAL"
+		result["size"] = strconv.FormatInt(utils.GetDirSize(backupPath), 10)
+	} else {
+		result["backup_type"] = "LOGICAL"
+	}
 
 	return result, nil
 }
@@ -496,14 +246,26 @@ func (m *MySQLBackup) DeleteAllBackups(ctx context.Context, opts ...BackupOption
 
 	files, err := filepath.Glob(filepath.Join(backupDir, "*.sql*"))
 	if err != nil {
-		return fmt.Errorf("列出备份失败: %w", err)
+		return fmt.Errorf("列出逻辑备份失败: %w", err)
 	}
 
 	for _, file := range files {
 		if err := os.Remove(file); err != nil {
-			utils.Warnf("删除备份失败: %v", err)
+			utils.Warnf("删除逻辑备份失败: %v", err)
 		}
 	}
+
+	dirs, err := filepath.Glob(filepath.Join(backupDir, "*_physical"))
+	if err != nil {
+		return fmt.Errorf("列出物理备份失败: %w", err)
+	}
+
+	for _, dir := range dirs {
+		if err := os.RemoveAll(dir); err != nil {
+			utils.Warnf("删除物理备份失败: %v", err)
+		}
+	}
+
 	return nil
 }
 
@@ -512,9 +274,9 @@ func init() {
 	RegisterDriver(DriverMetadata{
 		Name:                 "mysql",
 		Version:              "1.0.0",
-		Description:          "MySQL 数据库备份驱动，支持 mysqldump 逻辑备份",
+		Description:          "MySQL 数据库备份驱动，支持 mysqldump 逻辑备份和文件级物理备份",
 		SupportedActions:     []string{"backup", "restore", "list", "delete", "info", "delete-all"},
-		SupportedBackupTypes: []BackupType{BackupFull, BackupLogical, BackupPhysical},
+		SupportedBackupTypes: []BackupType{BackupTypeLogical, BackupTypePhysical},
 	}, func(config *DBConfig) (DatabaseBackup, error) {
 		return NewMySQLBackup(config)
 	})

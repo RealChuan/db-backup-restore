@@ -80,6 +80,9 @@ echo "Checking Go version..."
 go version
 
 # Download dependencies
+echo "Updating all dependencies..."
+go get -u ./...
+
 echo "Downloading dependencies..."
 go mod tidy
 

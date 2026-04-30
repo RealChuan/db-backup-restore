@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"path/filepath"
 	"time"
@@ -22,18 +21,23 @@ var (
 var backupCmd = &cobra.Command{
 	Use:   "backup",
 	Short: "执行数据库备份",
-	Long: `执行数据库备份操作，支持全量备份、增量备份等多种备份类型。
+	Long: `执行数据库备份操作，支持全量备份、增量备份等多种备份策略。
 
-支持的备份模式:
+支持的备份模式(--backup-mode):
   - full:         全量备份（所有数据库支持）
   - incremental:  增量备份（仅 Oracle 支持）
   - differential: 差异备份（仅 Oracle 支持）
-  - logical:      逻辑备份（MySQL/PostgreSQL 支持）
-  - physical:     物理备份（仅 PostgreSQL 支持）
+
+支持的备份类型(--backup-type):
+  - logical:      逻辑备份（导出SQL文件，MySQL/PostgreSQL支持）
+  - physical:     物理备份（复制数据文件，MySQL/PostgreSQL支持）
 
 使用示例:
-  # 执行 MySQL 全量备份
+  # 执行 MySQL 逻辑全量备份（默认）
   db-backup-restore backup -c config.json -t mysql
+
+  # 执行 MySQL 物理全量备份
+  db-backup-restore backup -c config.json -t mysql --backup-type physical
 
   # 执行 Oracle 增量备份
   db-backup-restore backup -c config.json -t oracle --backup-mode incremental
@@ -46,7 +50,7 @@ var backupCmd = &cobra.Command{
 }
 
 func init() {
-	backupCmd.Flags().StringVar(&backupMode, "backup-mode", "full", "备份模式: full, incremental, differential, logical, physical")
+	backupCmd.Flags().StringVar(&backupMode, "backup-mode", "full", "备份模式: full, incremental, differential")
 	backupCmd.Flags().IntVar(&parallelWorkers, "parallel-workers", 2, "并行工作线程数")
 	backupCmd.Flags().BoolVar(&enableCompression, "enable-compression", true, "是否启用压缩")
 
@@ -56,9 +60,15 @@ func init() {
 func runBackup(ctx context.Context) error {
 	utils.Info("=== 开始备份 ===")
 
-	backupType, err := parseBackupType(backupMode)
+	backupModeVal, err := backup.ParseBackupMode(backupMode)
 	if err != nil {
-		utils.AuditLog("backup", databaseType, "failed", "无效的备份类型: "+backupMode)
+		utils.AuditLog("backup", databaseType, "failed", "无效的备份模式: "+backupMode)
+		return err
+	}
+
+	backupTypeVal, err := backup.ParseBackupType(backupType)
+	if err != nil {
+		utils.AuditLog("backup", databaseType, "failed", "无效的备份类型: "+backupType)
 		return err
 	}
 
@@ -66,13 +76,16 @@ func runBackup(ctx context.Context) error {
 	archiveLogDest := filepath.Join(appConfig.BaseBackupDir, databaseType, "archivelog")
 
 	backupOpts := backup.BackupOptions{
-		Type:              backupType,
+		Mode:              backupModeVal,
+		Type:              backupTypeVal,
 		ParallelWorkers:   parallelWorkers,
 		EnableCompression: enableCompression,
 		TargetPath:        backupTargetPath,
 		ArchiveLogDest:    archiveLogDest,
 		Timeout:           2 * time.Hour,
 	}
+
+	utils.Infof("备份模式: %s, 备份类型: %s", backupMode, backupType)
 
 	return withDatabaseBackup(ctx, "backup", func(ctx context.Context, db backup.DatabaseBackup) error {
 		result, err := db.Backup(ctx, backupOpts, func(percent float64, msg string) {
@@ -91,26 +104,9 @@ func runBackup(ctx context.Context) error {
 		}
 
 		utils.AuditLog("backup", databaseType, "success",
-			fmt.Sprintf("backup_type=%s, file=%s, size=%d, duration=%v",
-				backupMode, result.BackupFile, result.BackupSize, result.Duration))
+			fmt.Sprintf("backup_type=%s, backup_mode=%s, file=%s, size=%d, duration=%v",
+				backupType, backupMode, result.BackupFile, result.BackupSize, result.Duration))
 
 		return nil
 	})
-}
-
-func parseBackupType(backupType string) (backup.BackupType, error) {
-	switch backupType {
-	case "full":
-		return backup.BackupFull, nil
-	case "incremental":
-		return backup.BackupIncremental, nil
-	case "differential":
-		return backup.BackupDifferential, nil
-	case "logical":
-		return backup.BackupLogical, nil
-	case "physical":
-		return backup.BackupPhysical, nil
-	default:
-		return "", errors.New("无效的备份类型: " + backupType)
-	}
 }

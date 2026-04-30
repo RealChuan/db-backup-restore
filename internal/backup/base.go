@@ -2,7 +2,11 @@ package backup
 
 import (
 	"context"
+	"fmt"
+	"path/filepath"
+	"regexp"
 	"strings"
+	"time"
 )
 
 // BaseBackup 提供公共字段和默认方法实现
@@ -79,4 +83,20 @@ func (b *BaseBackup) getBackupDir(options []BackupOptions) string {
 // Close 默认实现：无需释放资源
 func (b *BaseBackup) Close() error {
 	return nil
+}
+
+// ExtractDatabaseName 从备份文件名中提取数据库名
+func ExtractDatabaseName(backupFile string) string {
+	baseName := filepath.Base(backupFile)
+	re := regexp.MustCompile(`^(.+)_(\d{8})_(\d{6})\.sql$`)
+	if matches := re.FindStringSubmatch(baseName); len(matches) > 1 {
+		return matches[1]
+	}
+	return filepath.Base(backupFile)
+}
+
+// GenerateBackupFilename 生成标准格式的备份文件名
+func GenerateBackupFilename(name string, extension string) string {
+	timestamp := time.Now().Format("20060102_150405")
+	return fmt.Sprintf("%s_%s.%s", name, timestamp, extension)
 }

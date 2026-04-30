@@ -14,6 +14,7 @@ import (
 var (
 	configFilePath    string
 	databaseType      string
+	backupType        string
 	appConfig         *config.Config
 	loggerInitialized bool
 )
@@ -163,6 +164,7 @@ func runValidateConfig() error {
 func init() {
 	rootCmd.PersistentFlags().StringVarP(&configFilePath, "config", "c", "", "配置文件路径")
 	rootCmd.PersistentFlags().StringVarP(&databaseType, "db-type", "t", "mysql", "数据库类型: mysql, postgresql, oracle, mssql")
+	rootCmd.PersistentFlags().StringVar(&backupType, "backup-type", "logical", "备份类型: logical(逻辑备份/SQL文件), physical(物理备份/数据文件)")
 
 	rootCmd.AddCommand(validateConfigCmd)
 }

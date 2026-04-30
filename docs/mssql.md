@@ -47,6 +47,7 @@
     - [7.2 恢复步骤](#72-恢复步骤)
     - [7.3 命令示例](#73-命令示例)
     - [7.4 注意事项](#74-注意事项)
+  - [🔗 官方文档](#-官方文档)
 
 ---
 
@@ -436,3 +437,9 @@ STATS = 10;
 - **SQL Server 环境**：确保目标机器上的 SQL Server 环境已正确安装
 - **备份文件验证**：在恢复前使用 `RESTORE VERIFYONLY` 命令验证备份文件的可用性
 - **权限**：确保 SQL Server 服务账户对备份文件和目标目录有足够的权限
+
+---
+
+## 🔗 官方文档
+
+- [SQL Server 备份与还原官方文档](https://learn.microsoft.com/zh-cn/sql/relational-databases/backup-restore/back-up-and-restore-of-sql-server-databases?view=sql-server-ver17)

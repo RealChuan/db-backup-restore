@@ -58,6 +58,7 @@
       - [还原控制文件](#还原控制文件)
       - [还原和恢复数据库](#还原和恢复数据库)
     - [8.4 注意事项](#84-注意事项)
+  - [🔗 官方文档](#-官方文档)
 
 ---
 
@@ -518,3 +519,9 @@ ALTER DATABASE OPEN RESETLOGS;
 - **备份文件验证**：在恢复前使用 `CROSSCHECK BACKUP;` 命令验证备份文件的可用性
 - **权限**：确保 Oracle 用户对备份文件和目标目录有足够的权限
 - **网络连接**：如果使用网络复制备份文件，确保网络连接稳定，避免文件损坏
+
+---
+
+## 🔗 官方文档
+
+- [Oracle RMAN 备份与恢复官方文档](https://docs.oracle.com/en/database/oracle/oracle-database/19/bradv/index.html)

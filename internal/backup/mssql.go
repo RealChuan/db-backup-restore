@@ -112,6 +112,15 @@ func (m *MSSQLBackup) Backup(ctx context.Context, opts BackupOptions, callback P
 		Metadata:  make(map[string]string),
 	}
 
+	if opts.Mode == BackupModeIncremental || opts.Mode == BackupModeDifferential {
+		utils.Infof("MSSQL 不支持增量/差异备份模式，将使用全量备份")
+	}
+
+	if opts.Type == BackupTypeLogical {
+		result.Error = errors.New("MSSQL 不支持逻辑备份，请指定 --backup-type physical")
+		return result, result.Error
+	}
+
 	backupDir := opts.TargetPath
 	if backupDir == "" {
 		result.Error = errors.New("必须通过 -target-path 参数指定备份路径")
@@ -788,7 +797,7 @@ func init() {
 		Version:              "1.0.0",
 		Description:          "SQL Server 数据库备份驱动，支持 sqlcmd 命令备份",
 		SupportedActions:     []string{"backup", "restore", "list", "delete", "validate", "info", "register", "unregister", "verify-status", "delete-invalid", "delete-all"},
-		SupportedBackupTypes: []BackupType{BackupFull},
+		SupportedBackupTypes: []BackupType{BackupTypePhysical},
 	}, func(config *DBConfig) (DatabaseBackup, error) {
 		return NewMSSQLBackup(config)
 	})

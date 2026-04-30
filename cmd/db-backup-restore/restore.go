@@ -52,9 +52,16 @@ func init() {
 func runRestore(ctx context.Context) error {
 	utils.Info("=== 开始还原 ===")
 
+	backupTypeVal, err := backup.ParseBackupType(backupType)
+	if err != nil {
+		utils.AuditLog("restore", databaseType, "failed", "无效的备份类型: "+backupType)
+		return err
+	}
+
 	restoreOpts := backup.RestoreOptions{
 		BackupIdentifier:   backupIdentifier,
 		TargetDatabaseName: targetDatabaseName,
+		BackupType:         backupTypeVal,
 		Overwrite:          true,
 	}
 

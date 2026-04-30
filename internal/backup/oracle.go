@@ -166,6 +166,12 @@ func (o *OracleBackup) Backup(ctx context.Context, opts BackupOptions, callback 
 		StartTime: startTime,
 		Metadata:  make(map[string]string),
 	}
+
+	if opts.Type == BackupTypeLogical {
+		result.Error = errors.New("Oracle RMAN 不支持逻辑备份，请使用 expdp 等工具或指定 --backup-type physical")
+		return result, result.Error
+	}
+
 	archived, err := o.isArchiveLogMode(ctx)
 	if err != nil {
 		result.Error = err
@@ -234,12 +240,6 @@ func (o *OracleBackup) configureAutoBackupFormat(backupDir string) error {
 }
 
 func (o *OracleBackup) buildBackupScript(opts BackupOptions, backupDir string) string {
-	// 逻辑备份不支持 RMAN，返回空脚本并记录错误
-	if opts.Type == BackupLogical {
-		utils.Errorf("RMAN 不支持逻辑备份 (BackupLogical)，请使用 expdp 等工具单独实现")
-		return ""
-	}
-
 	var script strings.Builder
 	script.WriteString("RUN {\n")
 
@@ -269,13 +269,13 @@ func (o *OracleBackup) buildBackupScript(opts BackupOptions, backupDir string) s
 		}
 	}
 
-	// 根据备份类型生成对应的 BACKUP 命令
-	switch opts.Type {
-	case BackupFull, BackupPhysical:
+	// 根据备份模式生成对应的 BACKUP 命令
+	switch opts.Mode {
+	case BackupModeFull:
 		script.WriteString(fmt.Sprintf("  BACKUP DATABASE PLUS ARCHIVELOG DELETE INPUT FORMAT '%s';\n", datafileFormat))
-	case BackupIncremental:
+	case BackupModeIncremental:
 		script.WriteString(fmt.Sprintf("  BACKUP INCREMENTAL LEVEL 1 DATABASE PLUS ARCHIVELOG DELETE INPUT FORMAT '%s';\n", datafileFormat))
-	case BackupDifferential:
+	case BackupModeDifferential:
 		script.WriteString(fmt.Sprintf("  BACKUP INCREMENTAL LEVEL 1 CUMULATIVE DATABASE PLUS ARCHIVELOG DELETE INPUT FORMAT '%s';\n", datafileFormat))
 	default:
 		// 理论上不会走到这里，但兜底处理
@@ -571,7 +571,7 @@ func init() {
 		Version:              "1.0.0",
 		Description:          "Oracle 数据库备份驱动，支持 RMAN 物理备份",
 		SupportedActions:     []string{"backup", "restore", "list", "delete", "validate", "info", "register", "unregister", "verify-status", "delete-invalid", "delete-all"},
-		SupportedBackupTypes: []BackupType{BackupFull, BackupIncremental, BackupDifferential, BackupPhysical},
+		SupportedBackupTypes: []BackupType{BackupTypePhysical},
 	}, func(config *DBConfig) (DatabaseBackup, error) {
 		return NewOracleBackup(config)
 	})

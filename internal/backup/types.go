@@ -1,28 +1,31 @@
 package backup
 
 import (
+	"fmt"
 	"time"
 )
 
-// BackupType 定义备份类型
-// 各数据库备份类型支持情况：
-// - Oracle: full, incremental, differential（需开启归档模式）
-// - MSSQL: full（差异备份和事务日志备份需手动执行）
-// - MySQL: full, logical（通过 mysqldump 实现）
-// - PostgreSQL: full, logical, physical（physical 为目录格式备份）
+// BackupMode 定义备份模式（增量策略）
+type BackupMode string
+
+const (
+	BackupModeFull         BackupMode = "full"         // 全量备份
+	BackupModeIncremental  BackupMode = "incremental"  // 增量备份（仅 Oracle 支持）
+	BackupModeDifferential BackupMode = "differential" // 差异备份（仅 Oracle 支持）
+)
+
+// BackupType 定义备份类型（技术方式）
 type BackupType string
 
 const (
-	BackupFull         BackupType = "full"         // 全量备份
-	BackupIncremental  BackupType = "incremental"  // 增量备份（仅 Oracle 支持）
-	BackupDifferential BackupType = "differential" // 差异备份（仅 Oracle 支持）
-	BackupLogical      BackupType = "logical"      // 逻辑备份（MySQL/PostgreSQL 支持）
-	BackupPhysical     BackupType = "physical"     // 物理备份（仅 PostgreSQL 支持）
+	BackupTypeLogical  BackupType = "logical"  // 逻辑备份（导出SQL文件，MySQL/PostgreSQL支持）
+	BackupTypePhysical BackupType = "physical" // 物理备份（复制数据文件，MySQL/PostgreSQL支持）
 )
 
 // BackupOptions 备份操作的可选参数
 type BackupOptions struct {
-	Type              BackupType        // 备份类型
+	Mode              BackupMode        // 备份模式（增量策略）
+	Type              BackupType        // 备份类型（技术方式）
 	ParallelWorkers   int               // 并行度（Oracle/PostgreSQL 支持）
 	EnableCompression bool              // 是否压缩（Oracle/PostgreSQL 支持）
 	CompressionLevel  int               // 压缩级别 1-9
@@ -53,6 +56,7 @@ type RestoreOptions struct {
 	RecoveryPointInTime time.Time         // 时间点恢复（指定要还原到的具体时间）
 	BackupID            string            // 备份集ID（若指定，则还原该备份集，优先级高于 PointInTime）
 	BackupIdentifier    string            // 备份标识符（Oracle: 标签名, MSSQL/MySQL/PostgreSQL: 备份文件路径）
+	BackupType          BackupType        // 备份类型（logical/physical）
 	ExtraParams         map[string]string // 数据库特定参数
 	Timeout             time.Duration     // 超时时间
 }
@@ -99,6 +103,32 @@ var DefaultPorts = map[string]int{
 	"postgresql": 5432,
 	"oracle":     1521,
 	"mssql":      1433,
+}
+
+// ParseBackupMode 将字符串解析为 BackupMode
+func ParseBackupMode(s string) (BackupMode, error) {
+	switch s {
+	case "full":
+		return BackupModeFull, nil
+	case "incremental":
+		return BackupModeIncremental, nil
+	case "differential":
+		return BackupModeDifferential, nil
+	default:
+		return "", fmt.Errorf("invalid backup mode: %s", s)
+	}
+}
+
+// ParseBackupType 将字符串解析为 BackupType
+func ParseBackupType(s string) (BackupType, error) {
+	switch s {
+	case "logical":
+		return BackupTypeLogical, nil
+	case "physical":
+		return BackupTypePhysical, nil
+	default:
+		return "", fmt.Errorf("invalid backup type: %s", s)
+	}
 }
 
 // SetDefaults 为配置设置默认值
