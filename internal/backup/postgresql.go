@@ -70,24 +70,16 @@ func NewPostgreSQLBackup(config *DBConfig) (*PostgreSQLBackup, error) {
 }
 
 func (p *PostgreSQLBackup) Backup(ctx context.Context, opts BackupOptions, callback ProgressCallback) (*BackupResult, error) {
-	startTime := time.Now()
-	result := &BackupResult{
-		StartTime: startTime,
-		Metadata:  make(map[string]string),
-	}
-
 	if opts.Mode == BackupModeIncremental || opts.Mode == BackupModeDifferential {
 		utils.Infof("PostgreSQL 不支持增量/差异备份模式，将使用全量备份")
 	}
 
 	backupDir := opts.TargetPath
 	if backupDir == "" {
-		result.Error = errors.New("必须通过 -target-path 参数指定备份路径")
-		return result, result.Error
+		return nil, errors.New("必须通过 -target-path 参数指定备份路径")
 	}
 	if err := os.MkdirAll(backupDir, 0755); err != nil {
-		result.Error = err
-		return result, err
+		return nil, err
 	}
 
 	databaseName := p.config.Database
@@ -110,8 +102,7 @@ func (p *PostgreSQLBackup) Backup(ctx context.Context, opts BackupOptions, callb
 		return p.backupMultipleDatabasesLogical(ctx, backupDir, databases, callback)
 
 	default:
-		result.Error = errors.New("PostgreSQL 仅支持 logical 和 physical 备份类型")
-		return result, result.Error
+		return nil, errors.New("PostgreSQL 仅支持 logical 和 physical 备份类型")
 	}
 }
 
@@ -138,7 +129,7 @@ func (p *PostgreSQLBackup) Restore(ctx context.Context, opts RestoreOptions, cal
 	}
 
 	if isDir {
-		return p.restorePhysical(opts, callback)
+		return p.restorePhysical(ctx, opts, callback)
 	}
 
 	return p.restoreLogical(ctx, opts, callback)
@@ -200,11 +191,18 @@ func (p *PostgreSQLBackup) ListBackups(ctx context.Context, opts ...BackupOption
 func (p *PostgreSQLBackup) DeleteBackup(ctx context.Context, identifier string, opts ...BackupOptions) error {
 	var backupPath string
 	if filepath.IsAbs(identifier) {
-		backupPath = identifier
+		cleanPath, err := sanitizeBackupPath(identifier)
+		if err != nil {
+			return fmt.Errorf("invalid backup path: %w", err)
+		}
+		backupPath = cleanPath
 	} else {
 		backupDir := p.getBackupDir(opts)
 		if backupDir == "" {
 			return errors.New("必须通过 opts.TargetPath 指定备份目录或提供绝对路径")
+		}
+		if strings.ContainsAny(identifier, `/\`) {
+			return fmt.Errorf("backup identifier cannot contain path separators: %q", identifier)
 		}
 		backupPath = filepath.Join(backupDir, identifier)
 	}
@@ -227,10 +225,18 @@ func (p *PostgreSQLBackup) GetBackupInfo(ctx context.Context, backupID string, o
 	}
 
 	var backupPath string
+	backupDir := p.getBackupDir(opts)
+
 	if filepath.IsAbs(backupID) {
-		backupPath = backupID
+		cleanPath, err := sanitizeBackupPath(backupID)
+		if err != nil {
+			return nil, fmt.Errorf("invalid backup path: %w", err)
+		}
+		if err := mustBeUnderBackupDir(cleanPath, backupDir); err != nil {
+			return nil, fmt.Errorf("backup path not in allowed directory: %w", err)
+		}
+		backupPath = cleanPath
 	} else {
-		backupDir := p.getBackupDir(opts)
 		if backupDir == "" {
 			return nil, errors.New("必须通过 opts.TargetPath 指定备份目录或提供绝对路径")
 		}

@@ -45,7 +45,6 @@ type BackupResult struct {
 	Duration   time.Duration     // 耗时
 	StartTime  time.Time         // 开始时间
 	EndTime    time.Time         // 结束时间
-	Error      error             // 错误信息
 	Metadata   map[string]string // 其他元数据（如 LSN、SCN、备份集ID）
 }
 
@@ -66,7 +65,6 @@ type RestoreResult struct {
 	Success       bool          // 是否成功
 	Duration      time.Duration // 耗时
 	RestoredToSCN string        // 还原到的SCN
-	Error         error
 }
 
 // BackupInfo 备份元信息

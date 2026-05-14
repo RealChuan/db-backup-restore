@@ -114,12 +114,20 @@ func (p *PostgreSQLBackup) backupSingleDatabaseLogical(ctx context.Context, back
 		Metadata:  make(map[string]string),
 	}
 
+	if err := sanitizeDatabaseName(databaseName); err != nil {
+		return nil, fmt.Errorf("invalid database name: %w", err)
+	}
+
 	if callback != nil {
 		callback(0, fmt.Sprintf("开始逻辑备份数据库 %s...", databaseName))
 	}
 
 	backupFileName := GenerateBackupFilename(databaseName, "sql")
 	backupPath := filepath.Join(backupDir, backupFileName)
+
+	if _, err := sanitizeBackupPath(backupDir); err != nil {
+		return nil, fmt.Errorf("invalid backup directory: %w", err)
+	}
 
 	args := []string{
 		"-F", "p",
@@ -130,8 +138,7 @@ func (p *PostgreSQLBackup) backupSingleDatabaseLogical(ctx context.Context, back
 	}
 
 	if err := p.execPgDump(ctx, args, backupPath); err != nil {
-		result.Error = fmt.Errorf("逻辑备份失败: %w", err)
-		return result, result.Error
+		return nil, fmt.Errorf("逻辑备份失败: %w", err)
 	}
 
 	if callback != nil {
@@ -188,8 +195,7 @@ func (p *PostgreSQLBackup) backupMultipleDatabasesLogical(ctx context.Context, b
 	}
 
 	if len(backupFiles) == 0 {
-		result.Error = errors.New("没有成功逻辑备份任何数据库")
-		return result, result.Error
+		return nil, errors.New("没有成功逻辑备份任何数据库")
 	}
 
 	result.BackupFile = strings.Join(backupFiles, ",")
@@ -230,13 +236,17 @@ func (p *PostgreSQLBackup) restoreLogical(ctx context.Context, opts RestoreOptio
 	}
 
 	if backupFile == "" {
-		result.Error = errors.New("必须通过 --backup-identifier 参数指定备份文件路径")
-		return result, result.Error
+		return nil, errors.New("必须通过 --backup-identifier 参数指定备份文件路径")
 	}
 
+	cleanFile, err := sanitizeBackupPath(backupFile, ".sql")
+	if err != nil {
+		return nil, fmt.Errorf("invalid backup file path: %w", err)
+	}
+	backupFile = cleanFile
+
 	if _, err := os.Stat(backupFile); os.IsNotExist(err) {
-		result.Error = fmt.Errorf("备份文件不存在: %s", backupFile)
-		return result, result.Error
+		return nil, fmt.Errorf("备份文件不存在: %s", backupFile)
 	}
 
 	databaseName := opts.TargetDatabaseName
@@ -244,24 +254,25 @@ func (p *PostgreSQLBackup) restoreLogical(ctx context.Context, opts RestoreOptio
 		databaseName = ExtractDatabaseName(backupFile)
 	}
 
+	if err := sanitizeDatabaseName(databaseName); err != nil {
+		return nil, fmt.Errorf("invalid target database name: %w", err)
+	}
+
 	if !opts.Overwrite {
 		if err := p.createDatabaseIfNotExists(ctx, databaseName); err != nil {
-			result.Error = fmt.Errorf("创建数据库失败: %w", err)
-			return result, result.Error
+			return nil, fmt.Errorf("创建数据库失败: %w", err)
 		}
 	}
 
 	inputFile, err := os.Open(backupFile)
 	if err != nil {
-		result.Error = fmt.Errorf("打开备份文件失败: %w", err)
-		return result, result.Error
+		return nil, fmt.Errorf("打开备份文件失败: %w", err)
 	}
 	defer inputFile.Close()
 
 	_, err = p.execPsqlFromFile(ctx, databaseName, inputFile)
 	if err != nil {
-		result.Error = fmt.Errorf("逻辑还原失败: %w", err)
-		return result, result.Error
+		return nil, fmt.Errorf("逻辑还原失败: %w", err)
 	}
 
 	if callback != nil {
@@ -310,6 +321,10 @@ func (p *PostgreSQLBackup) getAllDatabases(ctx context.Context) ([]string, error
 
 // createDatabaseIfNotExists 如果数据库不存在则创建
 func (p *PostgreSQLBackup) createDatabaseIfNotExists(ctx context.Context, databaseName string) error {
+	if err := sanitizeDatabaseName(databaseName); err != nil {
+		return fmt.Errorf("invalid database name: %w", err)
+	}
+
 	existsSQL := fmt.Sprintf("SELECT 1 FROM pg_database WHERE datname = '%s';", databaseName)
 	output, err := p.execSQL(ctx, existsSQL)
 	if err != nil {

@@ -47,6 +47,7 @@ func LoadConfig(configPath string) (*Config, error) {
 
 	var cfg Config
 	decoder := json.NewDecoder(file)
+	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&cfg); err != nil {
 		return nil, err
 	}

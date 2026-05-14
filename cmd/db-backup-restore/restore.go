@@ -44,13 +44,19 @@ func init() {
 	restoreCmd.Flags().StringVar(&backupIdentifier, "backup-identifier", "", "备份标识符（Oracle: 标签名, MSSQL/MySQL/PostgreSQL: 备份文件路径）")
 	restoreCmd.Flags().StringVar(&targetDatabaseName, "target-database", "", "还原的目标数据库名")
 
-	restoreCmd.MarkFlagRequired("backup-identifier")
-
 	rootCmd.AddCommand(restoreCmd)
 }
 
 func runRestore(ctx context.Context) error {
 	utils.Info("=== 开始还原 ===")
+
+	if backupIdentifier == "" && recoveryPointInTime == "" {
+		return fmt.Errorf("必须指定 --backup-identifier 或 --recovery-point-in-time 参数")
+	}
+
+	if backupIdentifier == "" && databaseType != "oracle" && recoveryPointInTime != "" {
+		return fmt.Errorf("时间点恢复仅支持 Oracle 数据库")
+	}
 
 	backupTypeVal, err := backup.ParseBackupType(backupType)
 	if err != nil {

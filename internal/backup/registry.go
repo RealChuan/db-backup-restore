@@ -1,7 +1,6 @@
 package backup
 
 import (
-	"context"
 	"errors"
 	"sync"
 )
@@ -113,16 +112,6 @@ func NewBackup(config *DBConfig) (DatabaseBackup, error) {
 	}
 
 	return factory(config)
-}
-
-// NewBackupWithInit 创建数据库备份实例并执行初始化
-func NewBackupWithInit(ctx context.Context, config *DBConfig) (DatabaseBackup, error) {
-	db, err := NewBackup(config)
-	if err != nil {
-		return nil, err
-	}
-
-	return db, nil
 }
 
 // ValidateDriverConfig 验证驱动配置（不创建实例）

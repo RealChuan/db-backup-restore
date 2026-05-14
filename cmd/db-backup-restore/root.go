@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/spf13/cobra"
 
@@ -12,11 +13,12 @@ import (
 )
 
 var (
-	configFilePath    string
-	databaseType      string
-	backupType        string
-	appConfig         *config.Config
-	loggerInitialized bool
+	configFilePath string
+	databaseType   string
+	backupType     string
+	appConfig      *config.Config
+
+	loggerInitOnce sync.Once
 )
 
 var validateConfigCmd = &cobra.Command{
@@ -42,24 +44,29 @@ var rootCmd = &cobra.Command{
   db-backup-restore list-drivers
   db-backup-restore validate-config -c config.json`,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		if !loggerInitialized {
+		var initErr error
+		loggerInitOnce.Do(func() {
 			if configFilePath != "" {
 				var err error
 				appConfig, err = config.LoadConfig(configFilePath)
 				if err != nil {
-					return fmt.Errorf("加载配置文件失败: %w", err)
+					initErr = fmt.Errorf("加载配置文件失败: %w", err)
+					return
 				}
 				logConfig := appConfig.GetLogConfig()
 				if err := utils.InitLogger(logConfig); err != nil {
-					return fmt.Errorf("初始化日志系统失败: %w", err)
+					initErr = fmt.Errorf("初始化日志系统失败: %w", err)
+					return
 				}
 			} else {
 				if err := utils.InitLogger(utils.NewLogConfig()); err != nil {
-					return fmt.Errorf("初始化日志系统失败: %w", err)
+					initErr = fmt.Errorf("初始化日志系统失败: %w", err)
+					return
 				}
 			}
-			utils.InitTraceID()
-			loggerInitialized = true
+		})
+		if initErr != nil {
+			return initErr
 		}
 
 		if cmd.Name() == "validate-config" || cmd.Name() == "list-drivers" || cmd.Name() == "help" {

@@ -24,6 +24,10 @@ func (m *MySQLBackup) backupSingleDatabaseLogical(ctx context.Context, backupDir
 		Metadata:  make(map[string]string),
 	}
 
+	if err := sanitizeDatabaseName(databaseName); err != nil {
+		return nil, fmt.Errorf("invalid database name: %w", err)
+	}
+
 	if callback != nil {
 		callback(0, fmt.Sprintf("开始逻辑备份数据库 %s...", databaseName))
 	}
@@ -31,12 +35,15 @@ func (m *MySQLBackup) backupSingleDatabaseLogical(ctx context.Context, backupDir
 	backupFileName := GenerateBackupFilename(databaseName, "sql")
 	backupPath := filepath.Join(backupDir, backupFileName)
 
+	if _, err := sanitizeBackupPath(backupDir); err != nil {
+		return nil, fmt.Errorf("invalid backup directory: %w", err)
+	}
+
 	args := m.buildDumpCommandArgs()
 	args = append(args, databaseName)
 
 	if err := m.execMySQLDump(ctx, args, backupPath); err != nil {
-		result.Error = fmt.Errorf("逻辑备份失败: %w", err)
-		return result, result.Error
+		return nil, fmt.Errorf("逻辑备份失败: %w", err)
 	}
 
 	if callback != nil {
@@ -93,8 +100,7 @@ func (m *MySQLBackup) backupMultipleDatabasesLogical(ctx context.Context, backup
 	}
 
 	if len(backupFiles) == 0 {
-		result.Error = errors.New("没有成功逻辑备份任何数据库")
-		return result, result.Error
+		return nil, errors.New("没有成功逻辑备份任何数据库")
 	}
 
 	result.BackupFile = strings.Join(backupFiles, ",")
@@ -135,13 +141,17 @@ func (m *MySQLBackup) restoreLogical(ctx context.Context, opts RestoreOptions, c
 	}
 
 	if backupFile == "" {
-		result.Error = errors.New("必须通过 --backup-identifier 参数指定备份文件路径")
-		return result, result.Error
+		return nil, errors.New("必须通过 --backup-identifier 参数指定备份文件路径")
 	}
 
+	cleanFile, err := sanitizeBackupPath(backupFile, ".sql")
+	if err != nil {
+		return nil, fmt.Errorf("invalid backup file path: %w", err)
+	}
+	backupFile = cleanFile
+
 	if _, err := os.Stat(backupFile); os.IsNotExist(err) {
-		result.Error = fmt.Errorf("备份文件不存在: %s", backupFile)
-		return result, result.Error
+		return nil, fmt.Errorf("备份文件不存在: %s", backupFile)
 	}
 
 	databaseName := opts.TargetDatabaseName
@@ -149,17 +159,19 @@ func (m *MySQLBackup) restoreLogical(ctx context.Context, opts RestoreOptions, c
 		databaseName = ExtractDatabaseName(backupFile)
 	}
 
+	if err := sanitizeDatabaseName(databaseName); err != nil {
+		return nil, fmt.Errorf("invalid target database name: %w", err)
+	}
+
 	inputFile, err := os.Open(backupFile)
 	if err != nil {
-		result.Error = fmt.Errorf("打开备份文件失败: %w", err)
-		return result, result.Error
+		return nil, fmt.Errorf("打开备份文件失败: %w", err)
 	}
 	defer inputFile.Close()
 
 	_, err = m.execMySQLFromFile(ctx, databaseName, inputFile)
 	if err != nil {
-		result.Error = fmt.Errorf("逻辑还原失败: %w", err)
-		return result, result.Error
+		return nil, fmt.Errorf("逻辑还原失败: %w", err)
 	}
 
 	if callback != nil {

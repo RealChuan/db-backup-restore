@@ -1,19 +1,20 @@
 package utils
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 )
 
 // StartWindowsService 启动 Windows 服务
-func StartWindowsService(serviceName string) error {
+func StartWindowsService(ctx context.Context, serviceName string) error {
 	commands := []string{
 		fmt.Sprintf("sc start %s", serviceName),
 		fmt.Sprintf("net start %s", serviceName),
 	}
 
 	for _, cmdStr := range commands {
-		cmd := exec.Command("cmd", "/c", cmdStr)
+		cmd := exec.CommandContext(ctx, "cmd", "/c", cmdStr)
 		output, err := cmd.CombinedOutput()
 		if err == nil {
 			LogCommand(cmdStr, string(output), false)
@@ -26,14 +27,14 @@ func StartWindowsService(serviceName string) error {
 }
 
 // StopWindowsService 停止 Windows 服务
-func StopWindowsService(serviceName string) error {
+func StopWindowsService(ctx context.Context, serviceName string) error {
 	commands := []string{
 		fmt.Sprintf("sc stop %s", serviceName),
 		fmt.Sprintf("net stop %s", serviceName),
 	}
 
 	for _, cmdStr := range commands {
-		cmd := exec.Command("cmd", "/c", cmdStr)
+		cmd := exec.CommandContext(ctx, "cmd", "/c", cmdStr)
 		output, err := cmd.CombinedOutput()
 		if err == nil {
 			LogCommand(cmdStr, string(output), false)
@@ -46,8 +47,8 @@ func StopWindowsService(serviceName string) error {
 }
 
 // IsWindowsServiceRunning 检查 Windows 服务是否正在运行
-func IsWindowsServiceRunning(serviceName string) bool {
-	cmd := exec.Command("cmd", "/c", fmt.Sprintf("sc query %s | findstr RUNNING", serviceName))
+func IsWindowsServiceRunning(ctx context.Context, serviceName string) bool {
+	cmd := exec.CommandContext(ctx, "cmd", "/c", fmt.Sprintf("sc query %s | findstr RUNNING", serviceName))
 	output, err := cmd.CombinedOutput()
 	if err == nil && len(output) > 0 {
 		return true

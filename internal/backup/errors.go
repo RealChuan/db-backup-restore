@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -35,14 +36,14 @@ func (e *BackupError) Unwrap() error {
 	return e.Cause
 }
 
-func NewNotSupportedError(op, dbType string) error {
+func NewNotSupportedError(ctx context.Context, op, dbType string) error {
 	return &BackupError{
 		Type:      ErrorTypeNotSupported,
 		Op:        op,
 		DBType:    dbType,
 		Message:   fmt.Sprintf("%s 操作在 %s 数据库上不支持", op, dbType),
 		Timestamp: time.Now(),
-		TraceID:   utils.GetTraceID(),
+		TraceID:   utils.GetTraceID(ctx),
 	}
 }
 

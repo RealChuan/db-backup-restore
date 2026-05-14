@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -38,13 +39,11 @@ func (m *MySQLBackup) backupPhysical(ctx context.Context, backupDir string, call
 	backupPath := filepath.Join(backupDir, fmt.Sprintf("mysql_%s_physical", time.Now().Format("20060102_150405")))
 
 	if err := os.MkdirAll(backupPath, 0755); err != nil {
-		result.Error = fmt.Errorf("创建备份目录失败: %w", err)
-		return result, result.Error
+		return nil, fmt.Errorf("创建备份目录失败: %w", err)
 	}
 
 	if err := m.executePhysicalBackup(ctx, backupPath, callback); err != nil {
-		result.Error = fmt.Errorf("物理备份失败: %w", err)
-		return result, result.Error
+		return nil, fmt.Errorf("物理备份失败: %w", err)
 	}
 
 	if callback != nil {
@@ -182,8 +181,7 @@ func (m *MySQLBackup) restorePhysical(ctx context.Context, opts RestoreOptions, 
 
 	xtrabackupPath, err := m.getXtrabackupPathOrError()
 	if err != nil {
-		result.Error = fmt.Errorf("物理还原失败: %w", err)
-		return result, result.Error
+		return nil, fmt.Errorf("物理还原失败: %w", err)
 	}
 
 	var backupDir string
@@ -192,13 +190,11 @@ func (m *MySQLBackup) restorePhysical(ctx context.Context, opts RestoreOptions, 
 	}
 
 	if backupDir == "" {
-		result.Error = errors.New("必须通过 --backup-identifier 参数指定备份目录路径")
-		return result, result.Error
+		return nil, errors.New("必须通过 --backup-identifier 参数指定备份目录路径")
 	}
 
 	if _, err := os.Stat(backupDir); os.IsNotExist(err) {
-		result.Error = fmt.Errorf("备份目录不存在: %s", backupDir)
-		return result, result.Error
+		return nil, fmt.Errorf("备份目录不存在: %s", backupDir)
 	}
 
 	if opts.TargetDatabaseName != "" {
@@ -207,31 +203,33 @@ func (m *MySQLBackup) restorePhysical(ctx context.Context, opts RestoreOptions, 
 
 	datadir := m.config.Extra["DATA_DIR"]
 	if datadir == "" {
-		result.Error = errors.New("未配置 MySQL 数据目录，请在配置文件中设置 Extra[\"DATA_DIR\"]")
-		return result, result.Error
+		return nil, errors.New("未配置 MySQL 数据目录，请在配置文件中设置 Extra[\"DATA_DIR\"]")
+	}
+
+	if err := validateDataDir(datadir, "mysql"); err != nil {
+		return nil, fmt.Errorf("DATA_DIR validation failed: %w", err)
 	}
 
 	if callback != nil {
 		callback(20, "停止 MySQL 服务...")
 	}
 
-	if err := m.stopMySQLService(); err != nil {
-		result.Error = err
-		return result, result.Error
+	if err := m.stopMySQLService(ctx); err != nil {
+		return nil, err
 	}
 
 	if callback != nil {
-		callback(30, "清空目标数据目录...")
+		callback(30, "重命名旧数据目录...")
 	}
 
-	if err := os.RemoveAll(datadir); err != nil {
-		result.Error = fmt.Errorf("清空数据目录失败: %w", err)
-		return result, result.Error
+	oldDir := datadir + "_old_" + time.Now().Format("20060102_150405")
+	utils.Infof("正在重命名旧数据目录 %s -> %s", datadir, oldDir)
+	if err := os.Rename(datadir, oldDir); err != nil {
+		return nil, fmt.Errorf("failed to rename old data dir: %w", err)
 	}
 
 	if err := os.MkdirAll(datadir, 0755); err != nil {
-		result.Error = fmt.Errorf("创建数据目录失败: %w", err)
-		return result, result.Error
+		return nil, fmt.Errorf("创建数据目录失败: %w", err)
 	}
 
 	if callback != nil {
@@ -239,8 +237,7 @@ func (m *MySQLBackup) restorePhysical(ctx context.Context, opts RestoreOptions, 
 	}
 
 	if err := m.execXtrabackupRestore(ctx, xtrabackupPath, backupDir, datadir, callback); err != nil {
-		result.Error = err
-		return result, result.Error
+		return nil, err
 	}
 
 	if callback != nil {
@@ -255,9 +252,8 @@ func (m *MySQLBackup) restorePhysical(ctx context.Context, opts RestoreOptions, 
 		callback(90, "启动 MySQL 服务...")
 	}
 
-	if err := m.startMySQLService(); err != nil {
-		result.Error = err
-		return result, result.Error
+	if err := m.startMySQLService(ctx); err != nil {
+		return nil, err
 	}
 
 	if callback != nil {
@@ -310,60 +306,73 @@ func (m *MySQLBackup) execXtrabackupRestore(ctx context.Context, xtrabackupPath,
 	return nil
 }
 
-// stopMySQLService 停止 MySQL 服务
-func (m *MySQLBackup) stopMySQLService() error {
-	if utils.IsWindows() {
-		commands := []string{
-			"net stop MySQL",
-		}
-		for _, cmdStr := range commands {
-			cmd := exec.Command("cmd", "/c", cmdStr)
-			if err := cmd.Run(); err == nil {
-				return nil
-			}
-		}
-	} else {
-		commands := []string{
-			"systemctl stop mysqld",
-			"service mysql stop",
-		}
-		for _, cmdStr := range commands {
-			cmd := exec.Command("/bin/sh", "-c", cmdStr)
-			if err := cmd.Run(); err == nil {
-				return nil
-			}
+// getMySQLServiceName 获取 MySQL 服务名
+func (m *MySQLBackup) getMySQLServiceName() string {
+	if svc, ok := m.config.Extra["SERVICE_NAME"]; ok && svc != "" {
+		return svc
+	}
+
+	if runtime.GOOS == "windows" {
+		return "MySQL"
+	}
+
+	candidates := []string{"mysqld", "mysql", "mariadb", "percona"}
+	for _, candidate := range candidates {
+		cmd := exec.Command("systemctl", "is-active", "--quiet", candidate)
+		if err := cmd.Run(); err == nil {
+			return candidate
 		}
 	}
 
-	return errors.New("无法停止 MySQL 服务")
+	return "mysqld"
+}
+
+// stopMySQLService 停止 MySQL 服务
+func (m *MySQLBackup) stopMySQLService(ctx context.Context) error {
+	serviceName := m.getMySQLServiceName()
+	utils.Infof("正在停止 MySQL 服务: %s", serviceName)
+
+	if utils.IsWindows() {
+		cmd := exec.CommandContext(ctx, "net", "stop", serviceName)
+		if err := cmd.Run(); err == nil {
+			return nil
+		}
+	} else {
+		cmd := exec.CommandContext(ctx, "systemctl", "stop", serviceName)
+		if err := cmd.Run(); err == nil {
+			return nil
+		}
+		cmd = exec.CommandContext(ctx, "service", serviceName, "stop")
+		if err := cmd.Run(); err == nil {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("无法停止 MySQL 服务 %s", serviceName)
 }
 
 // startMySQLService 启动 MySQL 服务
-func (m *MySQLBackup) startMySQLService() error {
+func (m *MySQLBackup) startMySQLService(ctx context.Context) error {
+	serviceName := m.getMySQLServiceName()
+	utils.Infof("正在启动 MySQL 服务: %s", serviceName)
+
 	if utils.IsWindows() {
-		commands := []string{
-			"net start MySQL",
-		}
-		for _, cmdStr := range commands {
-			cmd := exec.Command("cmd", "/c", cmdStr)
-			if err := cmd.Run(); err == nil {
-				return nil
-			}
+		cmd := exec.CommandContext(ctx, "net", "start", serviceName)
+		if err := cmd.Run(); err == nil {
+			return nil
 		}
 	} else {
-		commands := []string{
-			"systemctl start mysqld",
-			"service mysql start",
+		cmd := exec.CommandContext(ctx, "systemctl", "start", serviceName)
+		if err := cmd.Run(); err == nil {
+			return nil
 		}
-		for _, cmdStr := range commands {
-			cmd := exec.Command("/bin/sh", "-c", cmdStr)
-			if err := cmd.Run(); err == nil {
-				return nil
-			}
+		cmd = exec.CommandContext(ctx, "service", serviceName, "start")
+		if err := cmd.Run(); err == nil {
+			return nil
 		}
 	}
 
-	return errors.New("无法启动 MySQL 服务")
+	return fmt.Errorf("无法启动 MySQL 服务 %s", serviceName)
 }
 
 // setMySQLFilePermissions 设置 MySQL 文件权限

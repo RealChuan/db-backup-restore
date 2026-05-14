@@ -2,6 +2,7 @@ package utils
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -109,11 +110,23 @@ func (rw *rotatingWriter) rotate() error {
 	for i := rw.maxBackups - 1; i > 0; i-- {
 		src := fmt.Sprintf("%s.%d%s", base, i, ext)
 		dst := fmt.Sprintf("%s.%d%s", base, i+1, ext)
-		os.Rename(src, dst)
+		if err := os.Rename(src, dst); err != nil {
+			if !os.IsNotExist(err) {
+				// 如果不是文件不存在的错误，尝试删除目标文件后重试
+				_ = os.Remove(dst)
+				_ = os.Rename(src, dst)
+			}
+		}
 	}
 
 	if rw.maxBackups > 0 {
-		os.Rename(rw.filePath, fmt.Sprintf("%s.1%s", base, ext))
+		backupPath := fmt.Sprintf("%s.1%s", base, ext)
+		if err := os.Rename(rw.filePath, backupPath); err != nil {
+			// 重命名失败时尝试复制+删除
+			if copyErr := copyFile(rw.filePath, backupPath); copyErr == nil {
+				_ = os.Remove(rw.filePath)
+			}
+		}
 	}
 
 	file, err := os.OpenFile(rw.filePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
@@ -123,6 +136,27 @@ func (rw *rotatingWriter) rotate() error {
 	rw.file = file
 	rw.currentSize = 0
 	return nil
+}
+
+func copyFile(src, dst string) error {
+	sourceFile, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer sourceFile.Close()
+
+	destFile, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer destFile.Close()
+
+	_, err = io.Copy(destFile, sourceFile)
+	if err != nil {
+		return err
+	}
+
+	return destFile.Sync()
 }
 
 func (rw *rotatingWriter) Close() error {
@@ -354,29 +388,37 @@ func GetLogLevel() string {
 	return currentLevel.String()
 }
 
-var traceIDKey string
-var traceIDOnce sync.Once
+type traceIDKeyType struct{}
 
-func SetTraceID(traceID string) {
-	traceIDOnce.Do(func() {
-		traceIDKey = traceID
-	})
-}
-
-func GetTraceID() string {
-	return traceIDKey
-}
-
-func ClearTraceID() {
-	traceIDKey = ""
-}
+var traceIDKey traceIDKeyType
 
 func generateTraceID() string {
 	return strconv.FormatInt(time.Now().UnixNano(), 10) + "-" + strconv.Itoa(os.Getpid())
 }
 
-func InitTraceID() {
-	traceIDKey = generateTraceID()
+func InitTraceID() string {
+	return generateTraceID()
+}
+
+func WithTraceID(ctx context.Context, traceID string) context.Context {
+	return context.WithValue(ctx, traceIDKey, traceID)
+}
+
+func GetTraceID(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if traceID, ok := ctx.Value(traceIDKey).(string); ok {
+		return traceID
+	}
+	return ""
+}
+
+func getTraceIDFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	return GetTraceID(ctx)
 }
 
 func FormatCommandOutput(cmd string, output string, isError bool) string {
@@ -444,11 +486,15 @@ func getCallerInfo() *runtime.Frame {
 }
 
 func Info(args ...interface{}) {
+	InfoCtx(nil, args...)
+}
+
+func InfoCtx(ctx context.Context, args ...interface{}) {
 	if Logger == nil {
 		fmt.Println(args...)
 		return
 	}
-	traceID := GetTraceID()
+	traceID := GetTraceID(ctx)
 	caller := getCallerInfo()
 	if caller != nil {
 		entry := Logger.WithField("caller", fmt.Sprintf("%s:%d", filepath.Base(caller.File), caller.Line))
@@ -466,11 +512,15 @@ func Info(args ...interface{}) {
 }
 
 func Infof(format string, args ...interface{}) {
+	InfofCtx(nil, format, args...)
+}
+
+func InfofCtx(ctx context.Context, format string, args ...interface{}) {
 	if Logger == nil {
 		fmt.Printf(format+"\n", args...)
 		return
 	}
-	traceID := GetTraceID()
+	traceID := GetTraceID(ctx)
 	caller := getCallerInfo()
 	message := fmt.Sprintf(format, args...)
 	if caller != nil {
@@ -489,11 +539,15 @@ func Infof(format string, args ...interface{}) {
 }
 
 func Warn(args ...interface{}) {
+	WarnCtx(nil, args...)
+}
+
+func WarnCtx(ctx context.Context, args ...interface{}) {
 	if Logger == nil {
 		fmt.Println(args...)
 		return
 	}
-	traceID := GetTraceID()
+	traceID := GetTraceID(ctx)
 	caller := getCallerInfo()
 	if caller != nil {
 		entry := Logger.WithField("caller", fmt.Sprintf("%s:%d", filepath.Base(caller.File), caller.Line))
@@ -511,11 +565,15 @@ func Warn(args ...interface{}) {
 }
 
 func Warnf(format string, args ...interface{}) {
+	WarnfCtx(nil, format, args...)
+}
+
+func WarnfCtx(ctx context.Context, format string, args ...interface{}) {
 	if Logger == nil {
 		fmt.Printf(format+"\n", args...)
 		return
 	}
-	traceID := GetTraceID()
+	traceID := GetTraceID(ctx)
 	caller := getCallerInfo()
 	message := fmt.Sprintf(format, args...)
 	if caller != nil {
@@ -534,11 +592,15 @@ func Warnf(format string, args ...interface{}) {
 }
 
 func Error(args ...interface{}) {
+	ErrorCtx(nil, args...)
+}
+
+func ErrorCtx(ctx context.Context, args ...interface{}) {
 	if Logger == nil {
 		fmt.Println(args...)
 		return
 	}
-	traceID := GetTraceID()
+	traceID := GetTraceID(ctx)
 	caller := getCallerInfo()
 	if caller != nil {
 		entry := Logger.WithField("caller", fmt.Sprintf("%s:%d", filepath.Base(caller.File), caller.Line))
@@ -556,11 +618,15 @@ func Error(args ...interface{}) {
 }
 
 func Errorf(format string, args ...interface{}) {
+	ErrorfCtx(nil, format, args...)
+}
+
+func ErrorfCtx(ctx context.Context, format string, args ...interface{}) {
 	if Logger == nil {
 		fmt.Printf(format+"\n", args...)
 		return
 	}
-	traceID := GetTraceID()
+	traceID := GetTraceID(ctx)
 	caller := getCallerInfo()
 	message := fmt.Sprintf(format, args...)
 	if caller != nil {
@@ -579,12 +645,16 @@ func Errorf(format string, args ...interface{}) {
 }
 
 func Fatal(args ...interface{}) {
+	FatalCtx(nil, args...)
+}
+
+func FatalCtx(ctx context.Context, args ...interface{}) {
 	if Logger == nil {
 		fmt.Println(args...)
 		os.Exit(1)
 		return
 	}
-	traceID := GetTraceID()
+	traceID := GetTraceID(ctx)
 	caller := getCallerInfo()
 	if caller != nil {
 		entry := Logger.WithField("caller", fmt.Sprintf("%s:%d", filepath.Base(caller.File), caller.Line))
@@ -603,12 +673,16 @@ func Fatal(args ...interface{}) {
 }
 
 func Fatalf(format string, args ...interface{}) {
+	FatalfCtx(nil, format, args...)
+}
+
+func FatalfCtx(ctx context.Context, format string, args ...interface{}) {
 	if Logger == nil {
 		fmt.Printf(format+"\n", args...)
 		os.Exit(1)
 		return
 	}
-	traceID := GetTraceID()
+	traceID := GetTraceID(ctx)
 	caller := getCallerInfo()
 	message := fmt.Sprintf(format, args...)
 	if caller != nil {
@@ -628,11 +702,15 @@ func Fatalf(format string, args ...interface{}) {
 }
 
 func Debug(args ...interface{}) {
+	DebugCtx(nil, args...)
+}
+
+func DebugCtx(ctx context.Context, args ...interface{}) {
 	if Logger == nil {
 		fmt.Println(args...)
 		return
 	}
-	traceID := GetTraceID()
+	traceID := GetTraceID(ctx)
 	caller := getCallerInfo()
 	if caller != nil {
 		entry := Logger.WithField("caller", fmt.Sprintf("%s:%d", filepath.Base(caller.File), caller.Line))
@@ -650,11 +728,15 @@ func Debug(args ...interface{}) {
 }
 
 func Debugf(format string, args ...interface{}) {
+	DebugfCtx(nil, format, args...)
+}
+
+func DebugfCtx(ctx context.Context, format string, args ...interface{}) {
 	if Logger == nil {
 		fmt.Printf(format+"\n", args...)
 		return
 	}
-	traceID := GetTraceID()
+	traceID := GetTraceID(ctx)
 	caller := getCallerInfo()
 	message := fmt.Sprintf(format, args...)
 	if caller != nil {

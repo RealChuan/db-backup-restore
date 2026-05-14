@@ -36,13 +36,11 @@ func (p *PostgreSQLBackup) backupPhysical(ctx context.Context, backupDir string,
 	backupPath := filepath.Join(backupDir, fmt.Sprintf("postgresql_%s_physical", time.Now().Format("20060102_150405")))
 
 	if err := os.MkdirAll(backupPath, 0755); err != nil {
-		result.Error = fmt.Errorf("创建备份目录失败: %w", err)
-		return result, result.Error
+		return nil, fmt.Errorf("创建备份目录失败: %w", err)
 	}
 
 	if err := p.executePhysicalBackup(ctx, backupPath, callback); err != nil {
-		result.Error = fmt.Errorf("物理备份失败: %w", err)
-		return result, result.Error
+		return nil, fmt.Errorf("物理备份失败: %w", err)
 	}
 
 	if callback != nil {
@@ -136,7 +134,7 @@ func (p *PostgreSQLBackup) execPgBasebackup(ctx context.Context, pgBasebackupPat
 }
 
 // restorePhysical 执行 PostgreSQL 物理还原
-func (p *PostgreSQLBackup) restorePhysical(opts RestoreOptions, callback ProgressCallback) (*RestoreResult, error) {
+func (p *PostgreSQLBackup) restorePhysical(ctx context.Context, opts RestoreOptions, callback ProgressCallback) (*RestoreResult, error) {
 	if !p.isAdmin() {
 		return nil, errors.New("物理还原需要管理员权限，请以管理员身份运行程序")
 	}
@@ -154,13 +152,11 @@ func (p *PostgreSQLBackup) restorePhysical(opts RestoreOptions, callback Progres
 	}
 
 	if backupDir == "" {
-		result.Error = errors.New("必须通过 --backup-identifier 参数指定备份目录路径")
-		return result, result.Error
+		return nil, errors.New("必须通过 --backup-identifier 参数指定备份目录路径")
 	}
 
 	if _, err := os.Stat(backupDir); os.IsNotExist(err) {
-		result.Error = fmt.Errorf("备份目录不存在: %s", backupDir)
-		return result, result.Error
+		return nil, fmt.Errorf("备份目录不存在: %s", backupDir)
 	}
 
 	if opts.TargetDatabaseName != "" {
@@ -169,26 +165,29 @@ func (p *PostgreSQLBackup) restorePhysical(opts RestoreOptions, callback Progres
 
 	datadir := p.config.Extra["DATA_DIR"]
 	if datadir == "" {
-		result.Error = errors.New("未配置 PostgreSQL 数据目录，请在配置文件中设置 Extra[\"DATA_DIR\"]")
-		return result, result.Error
+		return nil, errors.New("未配置 PostgreSQL 数据目录，请在配置文件中设置 Extra[\"DATA_DIR\"]")
+	}
+
+	if err := validateDataDir(datadir, "postgresql"); err != nil {
+		return nil, fmt.Errorf("DATA_DIR validation failed: %w", err)
 	}
 
 	if callback != nil {
 		callback(20, "停止 PostgreSQL 服务...")
 	}
 
-	if err := p.stopPostgreSQLService(); err != nil {
-		result.Error = err
-		return result, result.Error
+	if err := p.stopPostgreSQLService(ctx); err != nil {
+		return nil, err
 	}
 
 	if callback != nil {
-		callback(30, "清空目标数据目录...")
+		callback(30, "重命名旧数据目录...")
 	}
 
-	if err := os.RemoveAll(datadir); err != nil {
-		result.Error = fmt.Errorf("清空数据目录失败: %w", err)
-		return result, result.Error
+	oldDir := datadir + "_old_" + time.Now().Format("20060102_150405")
+	utils.Infof("正在重命名旧数据目录 %s -> %s", datadir, oldDir)
+	if err := os.Rename(datadir, oldDir); err != nil {
+		return nil, fmt.Errorf("failed to rename old data dir: %w", err)
 	}
 
 	if callback != nil {
@@ -196,8 +195,7 @@ func (p *PostgreSQLBackup) restorePhysical(opts RestoreOptions, callback Progres
 	}
 
 	if err := utils.CopyDir(backupDir, datadir); err != nil {
-		result.Error = fmt.Errorf("复制备份文件失败: %w", err)
-		return result, result.Error
+		return nil, fmt.Errorf("复制备份文件失败: %w", err)
 	}
 
 	if callback != nil {
@@ -212,9 +210,8 @@ func (p *PostgreSQLBackup) restorePhysical(opts RestoreOptions, callback Progres
 		callback(80, "准备启动 PostgreSQL 服务...")
 	}
 
-	if err := p.startPostgreSQLService(); err != nil {
-		result.Error = err
-		return result, result.Error
+	if err := p.startPostgreSQLService(ctx); err != nil {
+		return nil, err
 	}
 
 	if callback != nil {
@@ -228,7 +225,7 @@ func (p *PostgreSQLBackup) restorePhysical(opts RestoreOptions, callback Progres
 }
 
 // stopPostgreSQLService 停止 PostgreSQL 服务
-func (p *PostgreSQLBackup) stopPostgreSQLService() error {
+func (p *PostgreSQLBackup) stopPostgreSQLService(ctx context.Context) error {
 	datadir := p.config.Extra["DATA_DIR"]
 	if datadir == "" {
 		return errors.New("未配置 PostgreSQL 数据目录，请在配置文件中设置 Extra[\"DATA_DIR\"]")
@@ -238,10 +235,10 @@ func (p *PostgreSQLBackup) stopPostgreSQLService() error {
 	cmdStr := p.pgCtlPath + " " + strings.Join(args, " ")
 	utils.LogCommandInfo(cmdStr)
 
-	cmd := exec.CommandContext(context.Background(), p.pgCtlPath, args...)
+	cmd := exec.CommandContext(ctx, p.pgCtlPath, args...)
 	cmd.Env = append(os.Environ(), p.env...)
 
-	output, err := utils.ExecCommand(context.Background(), cmd)
+	output, err := utils.ExecCommand(ctx, cmd)
 	if err != nil {
 		utils.LogCommand(cmdStr, output, true)
 		return fmt.Errorf("pg_ctl stop 执行失败: %w, output: %s", err, output)
@@ -251,21 +248,21 @@ func (p *PostgreSQLBackup) stopPostgreSQLService() error {
 }
 
 // startPostgreSQLService 启动 PostgreSQL 服务
-func (p *PostgreSQLBackup) startPostgreSQLService() error {
+func (p *PostgreSQLBackup) startPostgreSQLService(ctx context.Context) error {
 	datadir := p.config.Extra["DATA_DIR"]
 	if datadir == "" {
 		return errors.New("未配置 PostgreSQL 数据目录，请在配置文件中设置 Extra[\"DATA_DIR\"]")
 	}
 
 	if utils.IsWindows() {
-		return p.startPostgreSQLServiceWindows()
+		return p.startPostgreSQLServiceWindows(ctx)
 	}
 
 	args := []string{"start", "-D", datadir}
 	cmdStr := p.pgCtlPath + " " + strings.Join(args, " ")
 	utils.LogCommandInfo(cmdStr)
 
-	cmd := exec.CommandContext(context.Background(), p.pgCtlPath, args...)
+	cmd := exec.CommandContext(ctx, p.pgCtlPath, args...)
 	cmd.Env = append(os.Environ(), p.env...)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
@@ -282,13 +279,13 @@ func (p *PostgreSQLBackup) startPostgreSQLService() error {
 }
 
 // startPostgreSQLServiceWindows 在 Windows 上使用服务方式启动 PostgreSQL
-func (p *PostgreSQLBackup) startPostgreSQLServiceWindows() error {
+func (p *PostgreSQLBackup) startPostgreSQLServiceWindows(ctx context.Context) error {
 	serviceName := p.config.Extra["SERVICE_NAME"]
 	if serviceName == "" {
 		serviceName = "postgresql-x64-18"
 	}
 
-	if err := utils.StartWindowsService(serviceName); err != nil {
+	if err := utils.StartWindowsService(ctx, serviceName); err != nil {
 		return fmt.Errorf("无法启动 PostgreSQL 服务 [%s]: %w", serviceName, err)
 	}
 	return nil

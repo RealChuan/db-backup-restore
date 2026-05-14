@@ -44,24 +44,16 @@ func NewMySQLBackup(config *DBConfig) (*MySQLBackup, error) {
 
 // Backup 执行 MySQL 备份（根据类型调用不同实现）
 func (m *MySQLBackup) Backup(ctx context.Context, opts BackupOptions, callback ProgressCallback) (*BackupResult, error) {
-	startTime := time.Now()
-	result := &BackupResult{
-		StartTime: startTime,
-		Metadata:  make(map[string]string),
-	}
-
 	if opts.Mode == BackupModeIncremental || opts.Mode == BackupModeDifferential {
 		utils.Infof("MySQL 不支持增量/差异备份模式，将使用全量备份")
 	}
 
 	backupDir := opts.TargetPath
 	if backupDir == "" {
-		result.Error = errors.New("必须通过 -target-path 参数指定备份路径")
-		return result, result.Error
+		return nil, errors.New("必须通过 -target-path 参数指定备份路径")
 	}
 	if err := os.MkdirAll(backupDir, 0755); err != nil {
-		result.Error = err
-		return result, err
+		return nil, err
 	}
 
 	databaseName := m.config.Database
@@ -84,8 +76,7 @@ func (m *MySQLBackup) Backup(ctx context.Context, opts BackupOptions, callback P
 		return m.backupMultipleDatabasesLogical(ctx, backupDir, databases, callback)
 
 	default:
-		result.Error = errors.New("MySQL 仅支持 logical 和 physical 备份类型")
-		return result, result.Error
+		return nil, errors.New("MySQL 仅支持 logical 和 physical 备份类型")
 	}
 }
 
@@ -179,11 +170,18 @@ func (m *MySQLBackup) ListBackups(ctx context.Context, opts ...BackupOptions) ([
 func (m *MySQLBackup) DeleteBackup(ctx context.Context, identifier string, opts ...BackupOptions) error {
 	var backupPath string
 	if filepath.IsAbs(identifier) {
-		backupPath = identifier
+		cleanPath, err := sanitizeBackupPath(identifier)
+		if err != nil {
+			return fmt.Errorf("invalid backup path: %w", err)
+		}
+		backupPath = cleanPath
 	} else {
 		backupDir := m.getBackupDir(opts)
 		if backupDir == "" {
 			return errors.New("必须通过 opts.TargetPath 指定备份目录或提供绝对路径")
+		}
+		if strings.ContainsAny(identifier, `/\`) {
+			return fmt.Errorf("backup identifier cannot contain path separators: %q", identifier)
 		}
 		backupPath = filepath.Join(backupDir, identifier)
 	}
@@ -207,10 +205,18 @@ func (m *MySQLBackup) GetBackupInfo(ctx context.Context, backupID string, opts .
 	}
 
 	var backupPath string
+	backupDir := m.getBackupDir(opts)
+
 	if filepath.IsAbs(backupID) {
-		backupPath = backupID
+		cleanPath, err := sanitizeBackupPath(backupID)
+		if err != nil {
+			return nil, fmt.Errorf("invalid backup path: %w", err)
+		}
+		if err := mustBeUnderBackupDir(cleanPath, backupDir); err != nil {
+			return nil, fmt.Errorf("backup path not in allowed directory: %w", err)
+		}
+		backupPath = cleanPath
 	} else {
-		backupDir := m.getBackupDir(opts)
 		if backupDir == "" {
 			return nil, errors.New("必须通过 opts.TargetPath 指定备份目录或提供绝对路径")
 		}

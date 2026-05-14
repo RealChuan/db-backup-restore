@@ -40,8 +40,8 @@ func NewMSSQLBackup(config *DBConfig) (*MSSQLBackup, error) {
 	}, nil
 }
 
-// buildConnectionString 构建 sqlcmd 连接参数
-func (m *MSSQLBackup) buildConnectionString() string {
+// buildSqlcmdArgs 构建 sqlcmd 连接参数
+func (m *MSSQLBackup) buildSqlcmdArgs() string {
 	var args []string
 	// 构建服务器地址
 	server := m.config.Host
@@ -82,6 +82,29 @@ func (m *MSSQLBackup) execSQL(ctx context.Context, sqlStatement string) (string,
 	return output, nil
 }
 
+// execSQLWithCSV 执行 SQL 命令（通过 sqlcmd）并以 CSV 格式输出
+func (m *MSSQLBackup) execSQLWithCSV(ctx context.Context, sqlStatement string) (string, error) {
+	utils.Infof("\n========== SQL 命令开始 ==========\n%s\n========== SQL 命令结束 ==========", sqlStatement)
+
+	var cmd *exec.Cmd
+	if m.isWindowsAuth() {
+		cmd = exec.CommandContext(ctx, "sqlcmd", "-S", m.buildServerArg(), "-E", "-C", "-Q", sqlStatement, "-h-1", "-s,", "-w", "65535")
+	} else {
+		cmd = exec.CommandContext(ctx, "sqlcmd", "-S", m.buildServerArg(), "-U", m.config.User, "-P", m.config.Password, "-C", "-Q", sqlStatement, "-h-1", "-s,", "-w", "65535")
+	}
+	if m.config.Database != "" {
+		cmd.Args = append(cmd.Args, "-d", m.config.Database)
+	}
+	cmd.Env = append(os.Environ(), m.env...)
+
+	output, err := utils.ExecCommand(ctx, cmd)
+	utils.Infof("\n========== SQL 执行输出开始 ==========\n%s\n========== SQL 执行输出结束 ==========", output)
+	if err != nil {
+		return output, fmt.Errorf("sqlcmd 执行失败: %w", err)
+	}
+	return output, nil
+}
+
 // isWindowsAuth 判断是否使用 Windows 身份验证
 func (m *MSSQLBackup) isWindowsAuth() bool {
 	if m.config.User == "" && m.config.Password == "" {
@@ -106,29 +129,20 @@ func (m *MSSQLBackup) buildServerArg() string {
 
 // Backup 执行 SQL Server 备份
 func (m *MSSQLBackup) Backup(ctx context.Context, opts BackupOptions, callback ProgressCallback) (*BackupResult, error) {
-	startTime := time.Now()
-	result := &BackupResult{
-		StartTime: startTime,
-		Metadata:  make(map[string]string),
-	}
-
 	if opts.Mode == BackupModeIncremental || opts.Mode == BackupModeDifferential {
 		utils.Infof("MSSQL 不支持增量/差异备份模式，将使用全量备份")
 	}
 
 	if opts.Type == BackupTypeLogical {
-		result.Error = errors.New("MSSQL 不支持逻辑备份，请指定 --backup-type physical")
-		return result, result.Error
+		return nil, errors.New("MSSQL 不支持逻辑备份，请指定 --backup-type physical")
 	}
 
 	backupDir := opts.TargetPath
 	if backupDir == "" {
-		result.Error = errors.New("必须通过 -target-path 参数指定备份路径")
-		return result, result.Error
+		return nil, errors.New("必须通过 -target-path 参数指定备份路径")
 	}
 	if err := os.MkdirAll(backupDir, 0755); err != nil {
-		result.Error = err
-		return result, err
+		return nil, err
 	}
 
 	databaseName := m.config.Database
@@ -158,8 +172,7 @@ func (m *MSSQLBackup) backupSingleDatabase(ctx context.Context, opts BackupOptio
 	}
 
 	if err := m.checkDatabaseExists(ctx, databaseName); err != nil {
-		result.Error = err
-		return result, err
+		return nil, err
 	}
 
 	backupFileName := fmt.Sprintf("%s_%s.bak", databaseName, time.Now().Format("20060102_150405"))
@@ -169,12 +182,14 @@ func (m *MSSQLBackup) backupSingleDatabase(ctx context.Context, opts BackupOptio
 		callback(0, fmt.Sprintf("开始备份数据库 %s...", databaseName))
 	}
 
-	sqlScript := m.buildBackupScript(opts, backupDir, databaseName, backupPath)
+	sqlScript, err := m.buildBackupScript(opts, backupDir, databaseName, backupPath)
+	if err != nil {
+		return nil, fmt.Errorf("build backup script failed: %w", err)
+	}
 
 	output, err := m.execSQL(ctx, sqlScript)
 	if err != nil {
-		result.Error = fmt.Errorf("备份失败: %w, 输出: %s", err, output)
-		return result, result.Error
+		return nil, fmt.Errorf("备份失败: %w, 输出: %s", err, output)
 	}
 
 	if callback != nil {
@@ -232,8 +247,7 @@ func (m *MSSQLBackup) backupMultipleDatabases(ctx context.Context, opts BackupOp
 	}
 
 	if len(backupFiles) == 0 {
-		result.Error = errors.New("没有成功备份任何数据库")
-		return result, result.Error
+		return nil, errors.New("没有成功备份任何数据库")
 	}
 
 	result.BackupFile = strings.Join(backupFiles, ",")
@@ -265,7 +279,7 @@ func (m *MSSQLBackup) getAllUserDatabases(ctx context.Context) ([]string, error)
 	sqlScript := `
 SELECT name 
 FROM sys.databases 
-WHERE name NOT IN ('tempdb') 
+WHERE name NOT IN ('master', 'tempdb', 'model', 'msdb') 
   AND state = 0 
 ORDER BY name;
 `
@@ -295,30 +309,41 @@ ORDER BY name;
 
 // checkDatabaseExists 检查指定数据库是否存在
 func (m *MSSQLBackup) checkDatabaseExists(ctx context.Context, databaseName string) error {
+	if err := sanitizeDatabaseName(databaseName); err != nil {
+		return fmt.Errorf("invalid database name: %w", err)
+	}
 	sqlScript := fmt.Sprintf(`
-IF NOT EXISTS (SELECT name FROM sys.databases WHERE name = '%s')
+IF NOT EXISTS (SELECT name FROM sys.databases WHERE name = N'%s')
 BEGIN
     RAISERROR('数据库 %s 不存在', 16, 1)
 END
 `, databaseName, databaseName)
 	_, err := m.execSQL(ctx, sqlScript)
 	if err != nil {
-		return fmt.Errorf("数据库 %s 不存在或无法访问: %w", databaseName, err)
+		return fmt.Errorf("database %q does not exist or cannot be accessed: %w", databaseName, err)
 	}
 	return nil
 }
 
 // buildBackupScript 根据选项生成备份脚本
-func (m *MSSQLBackup) buildBackupScript(opts BackupOptions, backupDir, databaseName, backupPath string) string {
+func (m *MSSQLBackup) buildBackupScript(opts BackupOptions, backupDir, databaseName, backupPath string) (string, error) {
+	if err := sanitizeDatabaseName(databaseName); err != nil {
+		return "", fmt.Errorf("invalid database name: %w", err)
+	}
+	cleanPath, err := sanitizeBackupPath(backupPath, ".bak", ".trn")
+	if err != nil {
+		return "", fmt.Errorf("invalid backup path: %w", err)
+	}
+
 	var script strings.Builder
-	script.WriteString(fmt.Sprintf("BACKUP DATABASE [%s] TO DISK = N'%s' WITH ", databaseName, backupPath))
+	script.WriteString(fmt.Sprintf("BACKUP DATABASE [%s] TO DISK = N'%s' WITH ", databaseName, cleanPath))
 
 	if opts.EnableCompression {
 		script.WriteString("COMPRESSION, ")
 	}
 
 	script.WriteString("STATS = 10")
-	return script.String()
+	return script.String(), nil
 }
 
 // Restore 执行 SQL Server 还原
@@ -336,8 +361,7 @@ func (m *MSSQLBackup) Restore(ctx context.Context, opts RestoreOptions, callback
 	}
 
 	if backupFile == "" {
-		result.Error = errors.New("必须通过 --backup-identifier 参数指定备份文件路径")
-		return result, result.Error
+		return nil, errors.New("必须通过 --backup-identifier 参数指定备份文件路径")
 	}
 
 	databaseName := opts.TargetDatabaseName
@@ -345,17 +369,18 @@ func (m *MSSQLBackup) Restore(ctx context.Context, opts RestoreOptions, callback
 		var err error
 		databaseName, err = m.getDatabaseNameFromBackup(ctx, backupFile)
 		if err != nil {
-			result.Error = fmt.Errorf("获取备份文件中的数据库名失败: %w", err)
-			return result, result.Error
+			return nil, fmt.Errorf("获取备份文件中的数据库名失败: %w", err)
 		}
 	}
 
-	sqlScript := m.buildRestoreScript(opts, databaseName, backupFile)
+	sqlScript, err := m.buildRestoreScript(opts, databaseName, backupFile)
+	if err != nil {
+		return nil, fmt.Errorf("build restore script failed: %w", err)
+	}
 
 	output, err := m.execSQL(ctx, sqlScript)
 	if err != nil {
-		result.Error = fmt.Errorf("还原失败: %w, 输出: %s", err, output)
-		return result, result.Error
+		return nil, fmt.Errorf("还原失败: %w, 输出: %s", err, output)
 	}
 
 	if callback != nil {
@@ -370,7 +395,12 @@ func (m *MSSQLBackup) Restore(ctx context.Context, opts RestoreOptions, callback
 
 // getDatabaseNameFromBackup 从备份文件中获取数据库名
 func (m *MSSQLBackup) getDatabaseNameFromBackup(ctx context.Context, backupFile string) (string, error) {
-	sqlScript := fmt.Sprintf(`RESTORE FILELISTONLY FROM DISK = N'%s';`, backupFile)
+	cleanPath, err := sanitizeBackupPath(backupFile, ".bak", ".trn")
+	if err != nil {
+		return "", fmt.Errorf("invalid backup file path: %w", err)
+	}
+
+	sqlScript := fmt.Sprintf(`RESTORE FILELISTONLY FROM DISK = N'%s';`, cleanPath)
 	output, err := m.execSQL(ctx, sqlScript)
 	if err != nil {
 		return "", err
@@ -408,9 +438,17 @@ func (m *MSSQLBackup) getDatabaseNameFromBackup(ctx context.Context, backupFile 
 }
 
 // buildRestoreScript 根据选项生成还原脚本
-func (m *MSSQLBackup) buildRestoreScript(opts RestoreOptions, databaseName, backupFile string) string {
+func (m *MSSQLBackup) buildRestoreScript(opts RestoreOptions, databaseName, backupFile string) (string, error) {
+	if err := sanitizeDatabaseName(databaseName); err != nil {
+		return "", fmt.Errorf("invalid database name: %w", err)
+	}
+	cleanPath, err := sanitizeBackupPath(backupFile, ".bak", ".trn")
+	if err != nil {
+		return "", fmt.Errorf("invalid backup file path: %w", err)
+	}
+
 	var script strings.Builder
-	script.WriteString(fmt.Sprintf("USE master; RESTORE DATABASE [%s] FROM DISK = N'%s' WITH ", databaseName, backupFile))
+	script.WriteString(fmt.Sprintf("USE master; RESTORE DATABASE [%s] FROM DISK = N'%s' WITH ", databaseName, cleanPath))
 
 	if opts.Overwrite {
 		script.WriteString("REPLACE, ")
@@ -418,11 +456,14 @@ func (m *MSSQLBackup) buildRestoreScript(opts RestoreOptions, databaseName, back
 
 	if !opts.RecoveryPointInTime.IsZero() {
 		timeStr := opts.RecoveryPointInTime.Format("2006-01-02 15:04:05")
+		if _, err := sanitizeDateLiteral(timeStr); err != nil {
+			return "", fmt.Errorf("invalid recovery point in time: %w", err)
+		}
 		script.WriteString(fmt.Sprintf("STOPAT = '%s', ", timeStr))
 	}
 
 	script.WriteString("STATS = 10")
-	return script.String()
+	return script.String(), nil
 }
 
 // ListBackups 列出所有备份
@@ -447,7 +488,7 @@ FROM msdb.dbo.backupset bs
 JOIN msdb.dbo.backupmediafamily bmf ON bs.media_set_id = bmf.media_set_id
 ORDER BY bs.backup_finish_date DESC
 `
-	output, err := m.execSQL(ctx, sqlScript)
+	output, err := m.execSQLWithCSV(ctx, sqlScript)
 	if err != nil {
 		return nil, fmt.Errorf("列出备份失败: %w", err)
 	}
@@ -458,45 +499,57 @@ ORDER BY bs.backup_finish_date DESC
 func (m *MSSQLBackup) parseBackupList(output string) ([]BackupInfo, error) {
 	var backups []BackupInfo
 	scanner := bufio.NewScanner(strings.NewReader(output))
-	lines := make([]string, 0)
+
 	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
-	}
-
-	if len(lines) < 5 {
-		return backups, nil
-	}
-
-	for i := 3; i < len(lines); i++ {
-		line := strings.TrimSpace(lines[i])
-		if line == "" || strings.Contains(line, "行受影响") {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.Contains(line, "行受影响") || strings.Contains(line, "rows affected") {
 			continue
 		}
 
-		fields := strings.Fields(line)
-		if len(fields) < 11 {
+		fields := strings.Split(line, ",")
+		if len(fields) < 9 {
 			continue
 		}
 
-		if _, err := strconv.Atoi(fields[0]); err != nil {
-			continue
+		for i := range fields {
+			fields[i] = strings.TrimSpace(fields[i])
+			fields[i] = strings.Trim(fields[i], "\"")
 		}
 
 		backupID := fields[0]
+		if _, err := strconv.Atoi(backupID); err != nil {
+			continue
+		}
+
 		backupType := fields[1]
-		completionTime, _ := time.Parse("2006-01-02 15:04:05", fields[4]+" "+strings.Split(fields[5], ".")[0])
-		size, _ := strconv.ParseInt(fields[6], 10, 64)
+
+		var completionTime time.Time
+		if len(fields) > 3 && fields[3] != "" {
+			dateTimeStr := strings.TrimSpace(fields[3])
+			dateTimeStr = strings.Split(dateTimeStr, ".")[0]
+			completionTime, _ = time.Parse("2006-01-02 15:04:05", dateTimeStr)
+		}
+
+		size, _ := strconv.ParseInt(fields[4], 10, 64)
 
 		tag := ""
-		backupPath := ""
-		if len(fields) > 7 {
-			tag = fields[7]
+		if len(fields) > 5 {
+			tag = strings.TrimSpace(fields[5])
 			if tag == "NULL" {
 				tag = ""
 			}
 		}
-		if len(fields) > 8 {
-			backupPath = fields[8]
+
+		backupPath := ""
+		if len(fields) > 6 {
+			backupPath = strings.TrimSpace(fields[6])
+			for i := 7; i < len(fields); i++ {
+				testPath := backupPath + "," + strings.TrimSpace(fields[i])
+				if strings.Contains(testPath, ".") && (strings.HasSuffix(testPath, ".bak") || strings.HasSuffix(testPath, ".trn")) {
+					backupPath = testPath
+					break
+				}
+			}
 		}
 
 		info := BackupInfo{
@@ -516,25 +569,61 @@ func (m *MSSQLBackup) parseBackupList(output string) ([]BackupInfo, error) {
 // DeleteBackup 删除指定备份
 func (m *MSSQLBackup) DeleteBackup(ctx context.Context, identifier string, opts ...BackupOptions) error {
 	var sqlScript string
+	var backupPaths []string
 
-	if _, err := strconv.Atoi(identifier); err == nil {
+	if bsid, err := sanitizePositiveInt(identifier); err == nil {
+		pathQuery := fmt.Sprintf(`
+SET NOCOUNT ON;
+SELECT bmf.physical_device_name 
+FROM msdb.dbo.backupset bs
+JOIN msdb.dbo.backupmediafamily bmf ON bs.media_set_id = bmf.media_set_id
+WHERE bs.backup_set_id = %d;`, bsid)
+		pathOutput, err := m.execSQL(ctx, pathQuery)
+		if err == nil {
+			backupPaths = parseBackupPaths(pathOutput)
+		}
+
 		sqlScript = fmt.Sprintf(`
 SET NOCOUNT ON;
-DECLARE @bsid INT = %s;
+DECLARE @bsid INT = %d;
 DELETE rfg FROM msdb.dbo.restorefilegroup rfg JOIN msdb.dbo.restorehistory rh ON rfg.restore_history_id = rh.restore_history_id WHERE rh.backup_set_id = @bsid;
 DELETE rf FROM msdb.dbo.restorefile rf JOIN msdb.dbo.restorehistory rh ON rf.restore_history_id = rh.restore_history_id WHERE rh.backup_set_id = @bsid;
 DELETE FROM msdb.dbo.restorehistory WHERE backup_set_id = @bsid;
 DELETE FROM msdb.dbo.backupfilegroup WHERE backup_set_id = @bsid;
 DELETE FROM msdb.dbo.backupfile WHERE backup_set_id = @bsid;
-DELETE FROM msdb.dbo.backupset WHERE backup_set_id = @bsid;`, identifier)
+DELETE FROM msdb.dbo.backupset WHERE backup_set_id = @bsid;`, bsid)
 	} else {
-		sqlScript = fmt.Sprintf("EXEC msdb.dbo.sp_delete_backuphistory @oldest_date = '%s';", identifier)
+		cleanDate, err := sanitizeDateLiteral(identifier)
+		if err != nil {
+			return fmt.Errorf("invalid delete identifier: %w", err)
+		}
+		pathQuery := fmt.Sprintf(`
+SET NOCOUNT ON;
+SELECT bmf.physical_device_name 
+FROM msdb.dbo.backupset bs
+JOIN msdb.dbo.backupmediafamily bmf ON bs.media_set_id = bmf.media_set_id
+WHERE bs.backup_finish_date <= '%s';`, cleanDate)
+		pathOutput, err := m.execSQL(ctx, pathQuery)
+		if err == nil {
+			backupPaths = parseBackupPaths(pathOutput)
+		}
+
+		sqlScript = fmt.Sprintf("EXEC msdb.dbo.sp_delete_backuphistory @oldest_date = '%s';", cleanDate)
 	}
 
 	output, err := m.execSQL(ctx, sqlScript)
 	if err != nil {
 		return fmt.Errorf("删除备份失败: %w, 输出: %s", err, output)
 	}
+
+	for _, path := range backupPaths {
+		if err := os.Remove(path); err != nil {
+			utils.Warnf("删除备份文件 %s 失败: %v", path, err)
+		} else {
+			utils.Infof("已删除备份文件: %s", path)
+		}
+	}
+
 	return nil
 }
 
@@ -546,12 +635,12 @@ func (m *MSSQLBackup) ValidateBackup(ctx context.Context, backupID string, opts 
 
 	var backupPath string
 
-	if _, err := strconv.Atoi(backupID); err == nil {
+	if bsid, err := sanitizePositiveInt(backupID); err == nil {
 		queryScript := fmt.Sprintf(`
 SELECT bmf.physical_device_name 
 FROM msdb.dbo.backupset bs
 JOIN msdb.dbo.backupmediafamily bmf ON bs.media_set_id = bmf.media_set_id
-WHERE bs.backup_set_id = %s`, backupID)
+WHERE bs.backup_set_id = %d`, bsid)
 
 		output, err := m.execSQL(ctx, queryScript)
 		if err != nil {
@@ -573,7 +662,11 @@ WHERE bs.backup_set_id = %s`, backupID)
 			return errors.New("未找到备份记录")
 		}
 	} else {
-		backupPath = backupID
+		cleanPath, err := sanitizeBackupPath(backupID, ".bak", ".trn")
+		if err != nil {
+			return fmt.Errorf("invalid backup file path: %w", err)
+		}
+		backupPath = cleanPath
 	}
 
 	sqlScript := fmt.Sprintf("RESTORE VERIFYONLY FROM DISK = N'%s' WITH NOUNLOAD;", backupPath)
@@ -593,9 +686,13 @@ WHERE bs.backup_set_id = %s`, backupID)
 func (m *MSSQLBackup) GetBackupInfo(ctx context.Context, backupID string, opts ...BackupOptions) (map[string]string, error) {
 	var sqlScript string
 	if backupID != "" {
+		bsid, err := sanitizePositiveInt(backupID)
+		if err != nil {
+			return nil, fmt.Errorf("invalid backup id: %w", err)
+		}
 		sqlScript = fmt.Sprintf(`
-SELECT * FROM msdb.dbo.backupset WHERE backup_set_id = %s;
-`, backupID)
+SELECT * FROM msdb.dbo.backupset WHERE backup_set_id = %d;
+`, bsid)
 	} else {
 		sqlScript = "SELECT TOP 10 * FROM msdb.dbo.backupset ORDER BY backup_finish_date DESC;"
 	}
@@ -613,11 +710,16 @@ SELECT * FROM msdb.dbo.backupset WHERE backup_set_id = %s;
 
 // RegisterBackup 将指定路径的备份文件注册到备份目录库
 func (m *MSSQLBackup) RegisterBackup(ctx context.Context, backupPath string) error {
+	cleanPath, err := sanitizeBackupPath(backupPath)
+	if err != nil {
+		return fmt.Errorf("invalid backup path: %w", err)
+	}
+
 	sqlScript := fmt.Sprintf(`
 EXEC msdb.dbo.sp_add_backup_filehistory 
     @backup_set_id = NULL,
     @file_name = N'%s';
-`, backupPath)
+`, cleanPath)
 
 	output, err := m.execSQL(ctx, sqlScript)
 	if err != nil {
@@ -628,7 +730,11 @@ EXEC msdb.dbo.sp_add_backup_filehistory
 
 // UnregisterBackup 从备份目录库中移除指定备份
 func (m *MSSQLBackup) UnregisterBackup(ctx context.Context, backupID string) error {
-	sqlScript := fmt.Sprintf("EXEC msdb.dbo.sp_delete_backuphistory @backup_set_id = %s;", backupID)
+	bsid, err := sanitizePositiveInt(backupID)
+	if err != nil {
+		return fmt.Errorf("invalid backup id for unregister: %w", err)
+	}
+	sqlScript := fmt.Sprintf("EXEC msdb.dbo.sp_delete_backuphistory @backup_set_id = %d;", bsid)
 	output, err := m.execSQL(ctx, sqlScript)
 	if err != nil {
 		return fmt.Errorf("移除备份记录失败: %w, 输出: %s", err, output)
@@ -675,7 +781,13 @@ WHERE bmf.device_type = 2
 		backupID := fields[0]
 		backupPath := fields[1]
 
-		verifyScript := fmt.Sprintf("RESTORE VERIFYONLY FROM DISK = N'%s' WITH NOUNLOAD;", backupPath)
+		cleanPath, err := sanitizeBackupPath(backupPath, ".bak", ".trn")
+		if err != nil {
+			utils.Warnf("备份路径 %s 校验失败，跳过: %v", backupPath, err)
+			continue
+		}
+
+		verifyScript := fmt.Sprintf("RESTORE VERIFYONLY FROM DISK = N'%s' WITH NOUNLOAD;", cleanPath)
 		if _, err := m.execSQL(ctx, verifyScript); err != nil {
 			utils.Warnf("备份 %s 验证失败: %v", backupID, err)
 
@@ -693,6 +805,11 @@ DELETE FROM msdb.dbo.backupset WHERE backup_set_id = %s;`,
 				utils.Warnf("删除无效备份记录 %s 失败: %v", backupID, err)
 			} else {
 				utils.Infof("已删除无效备份记录: %s", backupID)
+				if err := os.Remove(backupPath); err != nil {
+					utils.Warnf("删除备份文件 %s 失败: %v", backupPath, err)
+				} else {
+					utils.Infof("已删除备份文件: %s", backupPath)
+				}
 			}
 		} else {
 			utils.Infof("备份 %s 验证通过", backupID)
@@ -766,8 +883,44 @@ DELETE FROM msdb.dbo.backupset WHERE backup_set_id = %s;`,
 	return nil
 }
 
+// parseBackupPaths 解析 SQL 查询返回的备份文件路径
+func parseBackupPaths(output string) []string {
+	var paths []string
+	scanner := bufio.NewScanner(strings.NewReader(output))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || line == "physical_device_name" {
+			continue
+		}
+		if strings.HasPrefix(line, "(") && strings.HasSuffix(line, ")") {
+			continue
+		}
+		if strings.Contains(line, "----------") {
+			continue
+		}
+		if strings.Contains(line, "行受影响") || strings.Contains(line, "rows affected") {
+			continue
+		}
+		if len(line) > 0 {
+			paths = append(paths, line)
+		}
+	}
+	return paths
+}
+
 // DeleteAllBackups 删除所有备份
 func (m *MSSQLBackup) DeleteAllBackups(ctx context.Context, opts ...BackupOptions) error {
+	pathQuery := `
+SET NOCOUNT ON;
+SELECT bmf.physical_device_name 
+FROM msdb.dbo.backupset bs
+JOIN msdb.dbo.backupmediafamily bmf ON bs.media_set_id = bmf.media_set_id;`
+	pathOutput, err := m.execSQL(ctx, pathQuery)
+	var backupPaths []string
+	if err == nil {
+		backupPaths = parseBackupPaths(pathOutput)
+	}
+
 	sqlScript := `
 SET NOCOUNT ON;
 DELETE FROM msdb.dbo.restorefilegroup;
@@ -782,6 +935,15 @@ DELETE FROM msdb.dbo.backupmediaset;`
 	if err != nil {
 		return fmt.Errorf("删除所有备份失败: %w, 输出: %s", err, output)
 	}
+
+	for _, path := range backupPaths {
+		if err := os.Remove(path); err != nil {
+			utils.Warnf("删除备份文件 %s 失败: %v", path, err)
+		} else {
+			utils.Infof("已删除备份文件: %s", path)
+		}
+	}
+
 	return nil
 }
 
