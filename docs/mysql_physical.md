@@ -61,7 +61,8 @@ xtrabackup --prepare \
 
 > **🔄 还原注意事项**
 >
-> 物理还原会还原整个 MySQL 实例，需要停止 MySQL 服务，且会清空目标数据目录。
+> 物理还原会还原整个 MySQL 实例，需要停止 MySQL 服务。
+> 原数据目录会被重命名为 `{datadir}_old_{timestamp}` 保留，不会自动删除。
 
 ### 2.1 停止 MySQL 服务
 
@@ -79,19 +80,26 @@ service mysql stop
 net stop MySQL
 ```
 
-### 2.2 清空目标数据目录
+### 2.2 执行还原（copy-back）到临时目录
 
 ```bash
-rm -rf /var/lib/mysql/*
-mkdir -p /var/lib/mysql
-```
+# 创建临时目录
+mkdir -p /var/lib/mysql_new_20260415_150405
 
-### 2.3 执行还原（copy-back）
-
-```bash
+# 先还原到临时目录
 xtrabackup --copy-back \
   --src-dir=/backup/mysql_20260415_150405 \
-  --datadir=/var/lib/mysql
+  --datadir=/var/lib/mysql_new_20260415_150405
+```
+
+### 2.3 重命名旧数据目录并切换
+
+```bash
+# 重命名旧数据目录（保留备份）
+mv /var/lib/mysql /var/lib/mysql_old_20260415_150405
+
+# 切换到新数据目录
+mv /var/lib/mysql_new_20260415_150405 /var/lib/mysql
 ```
 
 ### 2.4 设置文件权限
@@ -131,11 +139,12 @@ net start MySQL
 | `backupPhysical()` | 创建备份目录并调用 execXtrabackup |
 | `execXtrabackup()` | `xtrabackup --backup --target-dir=<dir> --host=<host> --port=<port> --user=<user> [--password=<pwd>]` |
 | | `xtrabackup --prepare --target-dir=<dir>` |
-| `restorePhysical()` | 停止服务 → 清空目录 → 执行还原 → 设置权限 → 启动服务 |
-| `execXtrabackupRestore()` | `xtrabackup --copy-back --src-dir=<backup> --datadir=<datadir>` |
+| `restorePhysical()` | 创建临时目录 → 还原到临时目录 → 验证 → 停止服务 → 重命名旧目录 → 切换新目录 → 设置权限 → 启动服务 |
+| `execXtrabackupRestore()` | `xtrabackup --copy-back --src-dir=<backup> --datadir=<tempdir>` |
 | `stopMySQLService()` | `systemctl stop mysqld` 或 `net stop MySQL` |
 | `startMySQLService()` | `systemctl start mysqld` 或 `net start MySQL` |
 | `setMySQLFilePermissions()` | `chmod 755` 递归设置目录权限 |
+| `validateDataDir()` | 验证数据目录合法性和特征文件 |
 
 ---
 

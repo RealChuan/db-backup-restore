@@ -437,11 +437,17 @@ func (m *MSSQLBackup) getDatabaseNameFromBackup(ctx context.Context, backupFile 
 	return "", errors.New("无法从备份文件中获取数据库名")
 }
 
-// buildRestoreScript 根据选项生成还原脚本
+// buildRestoreScript 根据选项生成 MSSQL 还原脚本
+// 安全设计：
+//   - 对数据库名进行校验，防止 SQL 注入
+//   - 对备份文件路径进行校验，防止路径遍历攻击
+//   - 使用 Unicode 字符串格式 (N'...') 支持中文等 Unicode 字符
 func (m *MSSQLBackup) buildRestoreScript(opts RestoreOptions, databaseName, backupFile string) (string, error) {
+	// 安全校验：数据库名
 	if err := sanitizeDatabaseName(databaseName); err != nil {
 		return "", fmt.Errorf("invalid database name: %w", err)
 	}
+	// 安全校验：备份文件路径
 	cleanPath, err := sanitizeBackupPath(backupFile, ".bak", ".trn")
 	if err != nil {
 		return "", fmt.Errorf("invalid backup file path: %w", err)

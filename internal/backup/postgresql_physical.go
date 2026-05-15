@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -133,8 +134,24 @@ func (p *PostgreSQLBackup) execPgBasebackup(ctx context.Context, pgBasebackupPat
 	return nil
 }
 
-// restorePhysical 执行 PostgreSQL 物理还原
+// restorePhysical 执行 PostgreSQL 物理还原（还原整个数据库实例）
+//
+// 安全设计原则：
+//  1. 先还原到临时目录，验证完整性后再切换
+//  2. 保留旧数据目录作为备份，不自动删除
+//  3. 任何步骤失败都进行回滚，保证数据安全
+//
+// 执行流程（原子操作保证数据安全）：
+//  1. 权限检查 → 2. 参数校验 → 3. 创建临时目录 → 4. 复制备份到临时目录
+//  5. 验证临时目录 → 6. 停止服务 → 7. 重命名旧目录 → 8. 切换新目录
+//  9. 设置权限 → 10. 启动服务 → 11. 输出清理提示
+//
+// 关键设计说明：
+//   - 临时目录策略：先将备份复制到 {datadir}_new_{timestamp}，验证通过后再切换
+//   - 旧目录保留：原数据目录重命名为 {datadir}_old_{timestamp}，由用户手动清理
+//   - 回滚机制：任何步骤失败都清理临时目录，必要时恢复原数据目录
 func (p *PostgreSQLBackup) restorePhysical(ctx context.Context, opts RestoreOptions, callback ProgressCallback) (*RestoreResult, error) {
+	// 步骤1：权限检查 - 物理还原需要管理员权限（涉及系统服务管理和文件操作）
 	if !p.isAdmin() {
 		return nil, errors.New("物理还原需要管理员权限，请以管理员身份运行程序")
 	}
@@ -146,6 +163,7 @@ func (p *PostgreSQLBackup) restorePhysical(ctx context.Context, opts RestoreOpti
 		callback(0, "开始执行物理还原...")
 	}
 
+	// 获取备份目录路径（从参数中提取）
 	var backupDir string
 	if opts.BackupIdentifier != "" {
 		backupDir = opts.BackupIdentifier
@@ -155,51 +173,90 @@ func (p *PostgreSQLBackup) restorePhysical(ctx context.Context, opts RestoreOpti
 		return nil, errors.New("必须通过 --backup-identifier 参数指定备份目录路径")
 	}
 
+	// 验证备份目录存在
 	if _, err := os.Stat(backupDir); os.IsNotExist(err) {
 		return nil, fmt.Errorf("备份目录不存在: %s", backupDir)
 	}
 
+	// 物理还原会还原整个实例，目标数据库名参数将被忽略（给出警告）
 	if opts.TargetDatabaseName != "" {
 		utils.Warnf("物理还原将还原整个 PostgreSQL 实例，指定的目标数据库 [%s] 将被忽略", opts.TargetDatabaseName)
 	}
 
+	// 获取数据目录配置（必须在配置文件中设置）
 	datadir := p.config.Extra["DATA_DIR"]
 	if datadir == "" {
 		return nil, errors.New("未配置 PostgreSQL 数据目录，请在配置文件中设置 Extra[\"DATA_DIR\"]")
 	}
 
+	// 安全校验：验证数据目录合法性（防止路径遍历攻击和误操作）
 	if err := validateDataDir(datadir, "postgresql"); err != nil {
 		return nil, fmt.Errorf("DATA_DIR validation failed: %w", err)
 	}
 
-	if callback != nil {
-		callback(20, "停止 PostgreSQL 服务...")
-	}
-
-	if err := p.stopPostgreSQLService(ctx); err != nil {
-		return nil, err
-	}
+	timestamp := time.Now().Format("20060102_150405")
+	tempDir := datadir + "_new_" + timestamp
+	oldDir := datadir + "_old_" + timestamp
 
 	if callback != nil {
-		callback(30, "重命名旧数据目录...")
+		callback(20, "创建临时目录...")
 	}
 
-	oldDir := datadir + "_old_" + time.Now().Format("20060102_150405")
-	utils.Infof("正在重命名旧数据目录 %s -> %s", datadir, oldDir)
-	if err := os.Rename(datadir, oldDir); err != nil {
-		return nil, fmt.Errorf("failed to rename old data dir: %w", err)
+	if err := os.MkdirAll(tempDir, 0755); err != nil {
+		return nil, fmt.Errorf("创建临时目录失败: %w", err)
 	}
 
 	if callback != nil {
-		callback(40, "复制备份文件到数据目录...")
+		callback(30, "复制备份文件到临时目录...")
 	}
 
-	if err := utils.CopyDir(backupDir, datadir); err != nil {
+	if err := utils.CopyDir(backupDir, tempDir); err != nil {
+		os.RemoveAll(tempDir)
 		return nil, fmt.Errorf("复制备份文件失败: %w", err)
 	}
 
 	if callback != nil {
-		callback(70, "设置文件权限...")
+		callback(50, "验证临时目录...")
+	}
+
+	if err := validateDataDir(tempDir, "postgresql"); err != nil {
+		os.RemoveAll(tempDir)
+		return nil, fmt.Errorf("临时目录验证失败: %w", err)
+	}
+
+	if callback != nil {
+		callback(60, "停止 PostgreSQL 服务...")
+	}
+
+	if err := p.stopPostgreSQLService(ctx); err != nil {
+		os.RemoveAll(tempDir)
+		return nil, err
+	}
+
+	if callback != nil {
+		callback(70, "重命名旧数据目录...")
+	}
+
+	utils.Infof("正在重命名旧数据目录 %s -> %s", datadir, oldDir)
+	if err := os.Rename(datadir, oldDir); err != nil {
+		p.startPostgreSQLService(ctx)
+		os.RemoveAll(tempDir)
+		return nil, fmt.Errorf("failed to rename old data dir: %w", err)
+	}
+
+	if callback != nil {
+		callback(80, "切换到新数据目录...")
+	}
+
+	utils.Infof("正在重命名临时目录 %s -> %s", tempDir, datadir)
+	if err := os.Rename(tempDir, datadir); err != nil {
+		os.Rename(oldDir, datadir)
+		p.startPostgreSQLService(ctx)
+		return nil, fmt.Errorf("failed to rename temp dir to datadir: %w", err)
+	}
+
+	if callback != nil {
+		callback(85, "设置文件权限...")
 	}
 
 	if err := p.setPostgreSQLFilePermissions(datadir); err != nil {
@@ -207,7 +264,7 @@ func (p *PostgreSQLBackup) restorePhysical(ctx context.Context, opts RestoreOpti
 	}
 
 	if callback != nil {
-		callback(80, "准备启动 PostgreSQL 服务...")
+		callback(90, "准备启动 PostgreSQL 服务...")
 	}
 
 	if err := p.startPostgreSQLService(ctx); err != nil {
@@ -217,6 +274,8 @@ func (p *PostgreSQLBackup) restorePhysical(ctx context.Context, opts RestoreOpti
 	if callback != nil {
 		callback(100, "物理还原完成")
 	}
+
+	utils.Warnf("注意：旧数据目录 %s 已保留，请在确认数据无误后手动清理", oldDir)
 
 	result.Duration = time.Since(startTime)
 	result.Success = true
@@ -262,13 +321,14 @@ func (p *PostgreSQLBackup) startPostgreSQLService(ctx context.Context) error {
 	cmdStr := p.pgCtlPath + " " + strings.Join(args, " ")
 	utils.LogCommandInfo(cmdStr)
 
+	var stdout, stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, p.pgCtlPath, args...)
 	cmd.Env = append(os.Environ(), p.env...)
-	cmd.Stdout = nil
-	cmd.Stderr = nil
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
 
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("pg_ctl start 执行失败: %w", err)
+		return fmt.Errorf("pg_ctl start 执行失败: %w, stdout: %s, stderr: %s", err, stdout.String(), stderr.String())
 	}
 
 	if err := p.waitForPostgreSQL(datadir); err != nil {

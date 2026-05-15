@@ -54,7 +54,8 @@ pg_basebackup -D /backup/postgresql_20260415_150405 -X stream -j 4
 
 > **🔄 还原注意事项**
 >
-> 物理还原会还原整个 PostgreSQL 实例，需要停止 PostgreSQL 服务，且会清空目标数据目录。
+> 物理还原会还原整个 PostgreSQL 实例，需要停止 PostgreSQL 服务。
+> 原数据目录会被重命名为 `{datadir}_old_{timestamp}` 保留，不会自动删除。
 
 ### 2.1 停止 PostgreSQL 服务
 
@@ -72,16 +73,24 @@ systemctl stop postgresql
 net stop postgresql-x64-<version>
 ```
 
-### 2.2 清空目标数据目录
+### 2.2 复制备份文件到临时目录
 
 ```bash
-rm -rf /var/lib/postgresql/<version>/main/*
+# 创建临时目录
+mkdir -p /var/lib/postgresql/<version>/main_new_20260415_150405
+
+# 复制备份文件到临时目录
+cp -r /backup/postgresql_20260415_150405/* /var/lib/postgresql/<version>/main_new_20260415_150405/
 ```
 
-### 2.3 复制备份文件
+### 2.3 重命名旧数据目录并切换
 
 ```bash
-cp -r /backup/postgresql_20260415_150405/* /var/lib/postgresql/<version>/main/
+# 重命名旧数据目录（保留备份）
+mv /var/lib/postgresql/<version>/main /var/lib/postgresql/<version>/main_old_20260415_150405
+
+# 切换到新数据目录
+mv /var/lib/postgresql/<version>/main_new_20260415_150405 /var/lib/postgresql/<version>/main
 ```
 
 ### 2.4 设置文件权限
@@ -126,10 +135,11 @@ net start postgresql-x64-<version>
 | --- | --- |
 | `backupPhysical()` | 创建备份目录并调用 execPgBasebackup |
 | `execPgBasebackup()` | `pg_basebackup -D <dir> -X stream [-j <parallel>]` |
-| `restorePhysical()` | 停止服务 → 清空目录 → 复制文件 → 设置权限 → 启动服务 |
+| `restorePhysical()` | 创建临时目录 → 复制到临时目录 → 验证 → 停止服务 → 重命名旧目录 → 切换新目录 → 设置权限 → 启动服务 |
 | `stopPostgreSQLService()` | `pg_ctl stop -D <datadir>` |
 | `startPostgreSQLService()` | `pg_ctl start -D <datadir>` |
 | `setPostgreSQLFilePermissions()` | `chmod 755` 递归设置目录权限 |
+| `validateDataDir()` | 验证数据目录合法性和特征文件（PG_VERSION） |
 
 ---
 

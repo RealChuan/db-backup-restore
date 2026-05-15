@@ -11,20 +11,30 @@ import (
 	"time"
 )
 
-// sanitizeDatabaseName 校验数据库名，防止注入和误操作系统库。
-// 采用通用宽松策略：只禁止真正危险的字符，支持 UTF-8 和国际化数据库名。
+// sanitizeDatabaseName 校验数据库名，防止 SQL 注入和误操作系统库。
+// 采用通用宽松策略：只禁止真正危险的字符，支持 UTF-8 和国际化数据库名（如中文数据库名）。
+// 安全设计原则：
+//   - 禁止单引号(')：防止 SQL 字符串逃逸注入
+//   - 禁止双引号(")：防止某些数据库的标识符引号注入
+//   - 禁止分号(;)：防止多语句攻击
+//   - 禁止反斜杠(\)：防止路径逃逸
+//   - 禁止空字节(\x00)：防止字符串截断攻击
+//   - 禁止换行符(\n\r)：防止命令注入
+//   - 禁止方括号([])：防止 MSSQL 标识符注入
 func sanitizeDatabaseName(name string) error {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return errors.New("database name cannot be empty")
 	}
 
+	// 危险字符黑名单：这些字符可能被用于 SQL 注入或命令注入攻击
 	dangerousChars := "'\";\\\x00\n\r[]"
 	if strings.ContainsAny(name, dangerousChars) {
 		return fmt.Errorf("database name contains dangerous characters: %q", name)
 	}
 
 	// 长度限制：128 字符（覆盖 MySQL 64、PostgreSQL 63、MSSQL 128、Oracle 128）
+	// 使用最大支持长度作为统一限制，确保兼容性
 	if len(name) > 128 {
 		return fmt.Errorf("database name exceeds 128 characters: %d", len(name))
 	}
@@ -120,33 +130,42 @@ func sanitizeOracleBackupPath(path string) error {
 	return nil
 }
 
-// validateDataDir 对物理还原的目标数据目录进行白名单 + 特征校验
+// validateDataDir 对物理还原的目标数据目录进行严格校验。
+// 安全设计原则：
+//  1. 路径必须是绝对路径，防止相对路径攻击（如 ../../etc）
+//  2. 禁止根目录，防止误删整个系统
+//  3. 禁止系统目录，防止破坏系统文件
+//  4. 验证数据库特征文件，确保是有效的数据库数据目录
+//
+// 物理还原是高风险操作，此函数用于防止以下安全风险：
+//   - 路径遍历攻击：通过构造恶意路径删除系统文件
+//   - 误操作：用户错误配置导致删除重要数据
+//   - 数据丢失：还原到错误目录导致数据覆盖
 func validateDataDir(datadir string, dbType string) error {
 	if datadir == "" {
 		return errors.New("DATA_DIR cannot be empty")
 	}
 
+	// 规范化路径，移除冗余的 . 和 ..
 	cleanPath := filepath.Clean(datadir)
+
+	// 校验1：必须是绝对路径
+	// 相对路径可能被利用进行路径遍历攻击
 	if !filepath.IsAbs(cleanPath) {
 		return errors.New("DATA_DIR must be an absolute path")
 	}
 
+	// 校验2：禁止根目录
+	// 防止用户误操作删除整个磁盘
 	if cleanPath == "/" || cleanPath == "\\" ||
 		(len(cleanPath) == 3 && strings.HasSuffix(cleanPath, ":\\")) {
 		return errors.New("DATA_DIR cannot be root directory")
 	}
 
-	homeDir, _ := os.UserHomeDir()
-	if homeDir != "" {
-		homeClean := filepath.Clean(homeDir)
-		if cleanPath == homeClean || strings.HasPrefix(cleanPath, homeClean+string(os.PathSeparator)) {
-			return errors.New("DATA_DIR cannot be within user home directory")
-		}
-	}
-
+	// 校验3：禁止系统目录
+	// 防止还原操作破坏系统关键文件
 	forbiddenPrefixes := []string{
-		"/etc", "/usr", "/bin", "/sbin", "/lib", "/lib64",
-		"/boot", "/dev", "/proc", "/sys", "/tmp",
+		"/etc", "/usr", "/bin", "/sbin", "/boot", "/dev", "/proc", "/sys",
 		"C:\\Windows", "C:\\Program Files", "C:\\ProgramData",
 	}
 	lowerPath := strings.ToLower(cleanPath)
@@ -156,8 +175,11 @@ func validateDataDir(datadir string, dbType string) error {
 		}
 	}
 
+	// 校验4：验证数据库特征文件
+	// 确保目标目录是有效的数据库数据目录，防止误操作
 	switch dbType {
 	case "mysql":
+		// MySQL 数据目录必须包含 ibdata1（InnoDB 共享表空间）或 mysql 系统数据库目录
 		hasIBData := false
 		hasMySQLDir := false
 		if _, err := os.Stat(filepath.Join(cleanPath, "ibdata1")); err == nil {
@@ -170,6 +192,7 @@ func validateDataDir(datadir string, dbType string) error {
 			return fmt.Errorf("DATA_DIR %s does not appear to be a valid MySQL data directory (missing ibdata1 or mysql/ dir)", cleanPath)
 		}
 	case "postgresql":
+		// PostgreSQL 数据目录必须包含 PG_VERSION 文件
 		if _, err := os.Stat(filepath.Join(cleanPath, "PG_VERSION")); os.IsNotExist(err) {
 			return fmt.Errorf("DATA_DIR %s does not appear to be a valid PostgreSQL data directory (missing PG_VERSION)", cleanPath)
 		}

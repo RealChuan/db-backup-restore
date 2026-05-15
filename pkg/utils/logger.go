@@ -173,20 +173,20 @@ type CustomFormatter struct {
 
 func (f *CustomFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 	var levelColor string
-	var resetColor = "\x1b[0m"
+	var resetColor = string(rune(0x1B)) + "[0m"
 
 	if f.EnableColors {
 		switch entry.Level {
 		case logrus.DebugLevel:
-			levelColor = "\x1b[36m"
+			levelColor = string(rune(0x1B)) + "[36m"
 		case logrus.InfoLevel:
-			levelColor = "\x1b[32m"
+			levelColor = string(rune(0x1B)) + "[32m"
 		case logrus.WarnLevel:
-			levelColor = "\x1b[33m"
+			levelColor = string(rune(0x1B)) + "[33m"
 		case logrus.ErrorLevel, logrus.FatalLevel, logrus.PanicLevel:
-			levelColor = "\x1b[31m"
+			levelColor = string(rune(0x1B)) + "[31m"
 		default:
-			levelColor = "\x1b[37m"
+			levelColor = string(rune(0x1B)) + "[37m"
 		}
 	}
 
@@ -669,7 +669,6 @@ func FatalCtx(ctx context.Context, args ...interface{}) {
 			Logger.Fatal(args...)
 		}
 	}
-	os.Exit(1)
 }
 
 func Fatalf(format string, args ...interface{}) {

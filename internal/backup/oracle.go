@@ -194,7 +194,7 @@ func (o *OracleBackup) Backup(ctx context.Context, opts BackupOptions, callback 
 		return nil, err
 	}
 
-	if err := o.configureAutoBackupFormat(backupDir); err != nil {
+	if err := o.configureAutoBackupFormat(ctx, backupDir); err != nil {
 		return nil, fmt.Errorf("配置控制文件自动备份格式失败: %w", err)
 	}
 
@@ -225,26 +225,34 @@ func (o *OracleBackup) Backup(ctx context.Context, opts BackupOptions, callback 
 	return result, nil
 }
 
-func (o *OracleBackup) configureAutoBackupFormat(backupDir string) error {
+func (o *OracleBackup) configureAutoBackupFormat(ctx context.Context, backupDir string) error {
 	script := fmt.Sprintf("CONFIGURE CONTROLFILE AUTOBACKUP FORMAT FOR DEVICE TYPE DISK TO '%s';",
 		filepath.Join(backupDir, "cf_%F"))
-	_, err := o.execRman(context.Background(), script)
+	_, err := o.execRman(ctx, script)
 	return err
 }
 
+// buildBackupScript 构建 Oracle RMAN 备份脚本
+// 安全设计：
+//   - 对备份路径进行校验和清理，防止路径遍历攻击
+//   - 使用 escapeOracleRMANString 对路径进行转义，防止 RMAN 脚本注入
+//   - 使用 %U 格式生成唯一的备份文件名
 func (o *OracleBackup) buildBackupScript(opts BackupOptions, backupDir string) string {
 	var script strings.Builder
 	script.WriteString("RUN {\n")
 
+	// 安全校验：备份路径
 	cleanDir, err := sanitizeBackupPath(backupDir)
 	if err != nil {
 		cleanDir = filepath.Join(o.oracleHome, "database")
 	}
 
-	datafileFormat := filepath.Join(cleanDir, "%U")
-	cfFormat := filepath.Join(cleanDir, "cf_%U")
-	spfileFormat := filepath.Join(cleanDir, "spfile_%U")
+	// 构建备份文件格式
+	datafileFormat := filepath.Join(cleanDir, "%U")      // 数据文件备份格式
+	cfFormat := filepath.Join(cleanDir, "cf_%U")         // 控制文件备份格式
+	spfileFormat := filepath.Join(cleanDir, "spfile_%U") // 参数文件备份格式
 
+	// 安全转义：防止 RMAN 脚本注入
 	safeDatafileFormat := escapeOracleRMANString(datafileFormat)
 	safeCfFormat := escapeOracleRMANString(cfFormat)
 	safeSpfileFormat := escapeOracleRMANString(spfileFormat)
@@ -365,32 +373,57 @@ func (o *OracleBackup) Restore(ctx context.Context, opts RestoreOptions, callbac
 	return result, nil
 }
 
-// buildRestoreScript 根据选项生成还原脚本，支持按时间点或标签还原
+// buildRestoreScript 根据选项生成 Oracle RMAN 还原脚本
+// 支持两种还原方式：
+//  1. 按标签还原：使用 BackupIdentifier 指定备份标签
+//  2. 按时间点还原：使用 RecoveryPointInTime 指定恢复时间点
+//
+// 执行流程：
+//  1. SHUTDOWN IMMEDIATE - 立即关闭数据库
+//  2. STARTUP MOUNT - 以挂载模式启动数据库
+//  3. RESTORE DATABASE - 还原数据库
+//  4. RECOVER DATABASE - 恢复数据库（应用归档日志）
+//  5. ALTER DATABASE OPEN - 打开数据库（时间点恢复用 RESETLOGS）
+//
+// 安全设计：
+//   - 使用 escapeOracleRMANString 对标签进行转义，防止脚本注入
 func (o *OracleBackup) buildRestoreScript(opts RestoreOptions) string {
 	var script strings.Builder
 	script.WriteString("RUN {\n")
+
+	// 步骤1：关闭数据库（立即模式）
 	script.WriteString("  SHUTDOWN IMMEDIATE;\n")
+
+	// 步骤2：以挂载模式启动数据库（不打开）
 	script.WriteString("  STARTUP MOUNT;\n")
 
+	// 步骤3：选择还原方式
 	if opts.BackupIdentifier != "" {
+		// 按标签还原：使用指定的备份标签
 		safeTag := escapeOracleRMANString(opts.BackupIdentifier)
 		script.WriteString(fmt.Sprintf("  RESTORE DATABASE FROM TAG='%s';\n", safeTag))
 		script.WriteString("  RECOVER DATABASE;\n")
 	} else if !opts.RecoveryPointInTime.IsZero() {
+		// 按时间点还原：恢复到指定时间点
 		timeStr := opts.RecoveryPointInTime.Format("2006-01-02 15:04:05")
 		script.WriteString(fmt.Sprintf("  SET UNTIL TIME \"TO_DATE('%s', 'YYYY-MM-DD HH24:MI:SS')\";\n", timeStr))
 		script.WriteString("  RESTORE DATABASE;\n")
 		script.WriteString("  RECOVER DATABASE;\n")
 	} else {
+		// 默认还原：还原最新备份
 		script.WriteString("  RESTORE DATABASE;\n")
 		script.WriteString("  RECOVER DATABASE;\n")
 	}
 
+	// 步骤4：打开数据库
 	if !opts.RecoveryPointInTime.IsZero() {
+		// 时间点恢复需要使用 RESETLOGS 重置日志序列号
 		script.WriteString("  ALTER DATABASE OPEN RESETLOGS;\n")
 	} else {
+		// 普通还原直接打开数据库
 		script.WriteString("  ALTER DATABASE OPEN;\n")
 	}
+
 	script.WriteString("}\n")
 	return script.String()
 }

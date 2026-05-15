@@ -205,6 +205,9 @@ func (p *PostgreSQLBackup) DeleteBackup(ctx context.Context, identifier string, 
 			return fmt.Errorf("backup identifier cannot contain path separators: %q", identifier)
 		}
 		backupPath = filepath.Join(backupDir, identifier)
+		if err := mustBeUnderBackupDir(backupPath, backupDir); err != nil {
+			return err
+		}
 	}
 
 	info, err := os.Stat(backupPath)
