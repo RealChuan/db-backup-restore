@@ -172,16 +172,30 @@ DELETE NOPROMPT OBSOLETE;
 ### 2.5 压缩备份
 
 ```rman
-CONFIGURE COMPRESSION ALGORITHM 'MEDIUM';
-BACKUP AS COMPRESSED BACKUPSET DATABASE PLUS ARCHIVELOG DELETE INPUT;
+RUN {
+  ALLOCATE CHANNEL ch1 DEVICE TYPE DISK FORMAT '/backup/%U';
+  CONFIGURE COMPRESSION ALGORITHM 'MEDIUM';
+  BACKUP AS COMPRESSED BACKUPSET DATABASE PLUS ARCHIVELOG DELETE INPUT FORMAT '/backup/%U';
+  BACKUP CURRENT CONTROLFILE FORMAT '/backup/cf_%U';
+  BACKUP SPFILE FORMAT '/backup/spfile_%U';
+  RELEASE CHANNEL ch1;
+}
+DELETE NOPROMPT OBSOLETE;
 ```
 
 ### 2.6 加密备份
 
 ```rman
-CONFIGURE ENCRYPTION FOR DATABASE ON;
-SET ENCRYPTION IDENTIFIED BY 'your_password' ONLY;
-BACKUP DATABASE PLUS ARCHIVELOG DELETE INPUT;
+RUN {
+  ALLOCATE CHANNEL ch1 DEVICE TYPE DISK FORMAT '/backup/%U';
+  CONFIGURE ENCRYPTION FOR DATABASE ON;
+  SET ENCRYPTION IDENTIFIED BY 'your_password' ONLY;
+  BACKUP DATABASE PLUS ARCHIVELOG DELETE INPUT FORMAT '/backup/%U';
+  BACKUP CURRENT CONTROLFILE FORMAT '/backup/cf_%U';
+  BACKUP SPFILE FORMAT '/backup/spfile_%U';
+  RELEASE CHANNEL ch1;
+}
+DELETE NOPROMPT OBSOLETE;
 ```
 
 ---
@@ -367,14 +381,14 @@ DELETE NOPROMPT BACKUP;
 | Go 方法                           | 对应的底层命令                                                                           |
 | --------------------------------- | ---------------------------------------------------------------------------------------- |
 | `EnableArchiveLogMode(ctx, dest)` | `SHUTDOWN IMMEDIATE; STARTUP MOUNT; ALTER DATABASE ARCHIVELOG; ... ALTER DATABASE OPEN;` |
-| `Backup(BackupFull)`              | `BACKUP DATABASE PLUS ARCHIVELOG DELETE INPUT;`                                          |
+| `Backup(BackupFull)`              | `BACKUP DATABASE PLUS ARCHIVELOG DELETE INPUT;`（若数据库未开启归档模式，会自动调用 `EnableArchiveLogMode` 启用） |
 | `Backup(BackupIncremental)`       | `BACKUP INCREMENTAL LEVEL 1 DATABASE PLUS ARCHIVELOG DELETE INPUT;`                      |
 | `Backup(BackupDifferential)`      | `BACKUP INCREMENTAL LEVEL 1 CUMULATIVE DATABASE PLUS ARCHIVELOG DELETE INPUT;`           |
 | `Restore(PointInTime)`            | `SET UNTIL TIME ...; RESTORE DATABASE; RECOVER DATABASE; ALTER DATABASE OPEN RESETLOGS;` |
 | `Restore(BackupTag)`              | `RESTORE DATABASE FROM TAG='<tag>'; RECOVER DATABASE; ALTER DATABASE OPEN;`              |
 | `ListBackups()`                   | `LIST BACKUP SUMMARY;`（解析输出）                                                       |
 | `DeleteBackup(backupID)`          | `DELETE NOPROMPT BACKUPSET <id>;`                                                        |
-| `DeleteBackup(timeRFC3339)`       | `DELETE NOPROMPT BACKUP COMPLETED BEFORE TO_DATE(...);`                                  |
+| `DeleteBackup(timeRFC3339)`       | `DELETE NOPROMPT BACKUP COMPLETED BEFORE TO_DATE(...);`（支持 RFC3339 和 `YYYY-MM-DDTHH:MM:SS` 两种时间格式） |
 | `ValidateBackup(backupID)`        | `VALIDATE BACKUPSET <id>;` 或 `RESTORE DATABASE VALIDATE CHECK LOGICAL;`                 |
 | `GetBackupInfo(backupID)`         | `LIST BACKUPSET <id>;` 或 `LIST BACKUP OF DATABASE SUMMARY;`                             |
 | `RegisterBackup(backupPath)`      | `CATALOG START WITH '<backupPath>';`                                                     |

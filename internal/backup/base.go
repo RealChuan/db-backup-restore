@@ -31,28 +31,28 @@ func (b *BaseBackup) IsInitialized() bool {
 }
 
 // RegisterBackup 默认实现：大多数数据库不支持注册备份到目录库
-func (b *BaseBackup) RegisterBackup(ctx context.Context, backupPath string) error {
-	return NewNotSupportedError("RegisterBackup", b.config.Type)
+func (b *BaseBackup) RegisterBackup(ctx context.Context, _ string) error {
+	return NewNotSupportedError(ctx, "RegisterBackup", b.config.Type)
 }
 
 // UnregisterBackup 默认实现：大多数数据库不支持取消注册备份
-func (b *BaseBackup) UnregisterBackup(ctx context.Context, backupID string) error {
-	return NewNotSupportedError("UnregisterBackup", b.config.Type)
+func (b *BaseBackup) UnregisterBackup(ctx context.Context, _ string) error {
+	return NewNotSupportedError(ctx, "UnregisterBackup", b.config.Type)
 }
 
 // VerifyBackupStatus 默认实现：大多数数据库不支持检查备份状态
 func (b *BaseBackup) VerifyBackupStatus(ctx context.Context) error {
-	return NewNotSupportedError("VerifyBackupStatus", b.config.Type)
+	return NewNotSupportedError(ctx, "VerifyBackupStatus", b.config.Type)
 }
 
 // DeleteInvalidBackups 默认实现：大多数数据库不支持删除无效备份记录
-func (b *BaseBackup) DeleteInvalidBackups(ctx context.Context, opts ...BackupOptions) error {
-	return NewNotSupportedError("DeleteInvalidBackups", b.config.Type)
+func (b *BaseBackup) DeleteInvalidBackups(ctx context.Context, _ ...BackupOptions) error {
+	return NewNotSupportedError(ctx, "DeleteInvalidBackups", b.config.Type)
 }
 
 // ValidateBackup 默认实现：大多数数据库不支持完整验证备份文件完整性
-func (b *BaseBackup) ValidateBackup(ctx context.Context, backupID string, opts ...BackupOptions) error {
-	return NewNotSupportedError("ValidateBackup", b.config.Type)
+func (b *BaseBackup) ValidateBackup(ctx context.Context, _ string, _ ...BackupOptions) error {
+	return NewNotSupportedError(ctx, "ValidateBackup", b.config.Type)
 }
 
 // parseDatabaseNames 解析数据库名称（支持逗号分隔的多个数据库）

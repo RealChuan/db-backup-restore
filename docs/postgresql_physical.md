@@ -13,10 +13,11 @@
     - [1.2 并行物理备份](#12-并行物理备份)
   - [2. 物理还原命令](#2-物理还原命令)
     - [2.1 停止 PostgreSQL 服务](#21-停止-postgresql-服务)
-    - [2.2 清空目标数据目录](#22-清空目标数据目录)
-    - [2.3 复制备份文件](#23-复制备份文件)
-    - [2.4 设置文件权限](#24-设置文件权限)
-    - [2.5 启动 PostgreSQL 服务](#25-启动-postgresql-服务)
+    - [2.2 复制备份文件到临时目录](#22-复制备份文件到临时目录)
+    - [2.3 验证临时目录](#23-验证临时目录)
+    - [2.4 重命名旧数据目录并切换](#24-重命名旧数据目录并切换)
+    - [2.5 设置文件权限](#25-设置文件权限)
+    - [2.6 启动 PostgreSQL 服务](#26-启动-postgresql-服务)
   - [3. Go 代码与底层命令映射](#3-go-代码与底层命令映射)
   - [4. 异机恢复指南](#4-异机恢复指南)
     - [4.1 前提条件](#41-前提条件)
@@ -44,6 +45,8 @@ pg_basebackup -D /backup/postgresql_20260415_150405 -X stream
 
 ### 1.2 并行物理备份
 
+> **注意**：当前代码的 `execPgBasebackup()` 仅使用 `-D` 和 `-X stream` 参数，不支持 `-j` 并行选项。以下命令仅为 `pg_basebackup` 工具本身的能力说明，代码中尚未实现。
+
 ```bash
 pg_basebackup -D /backup/postgresql_20260415_150405 -X stream -j 4
 ```
@@ -54,7 +57,8 @@ pg_basebackup -D /backup/postgresql_20260415_150405 -X stream -j 4
 
 > **🔄 还原注意事项**
 >
-> 物理还原会还原整个 PostgreSQL 实例，需要停止 PostgreSQL 服务，且会清空目标数据目录。
+> 物理还原会还原整个 PostgreSQL 实例，需要停止 PostgreSQL 服务。
+> 原数据目录会被重命名为 `{datadir}_old_{timestamp}` 保留，不会自动删除。
 
 ### 2.1 停止 PostgreSQL 服务
 
@@ -72,33 +76,55 @@ systemctl stop postgresql
 net stop postgresql-x64-<version>
 ```
 
-### 2.2 清空目标数据目录
+### 2.2 复制备份文件到临时目录
+
+代码实现为先将备份复制到临时目录 `{datadir}_new_{timestamp}`，验证通过后再切换：
 
 ```bash
-rm -rf /var/lib/postgresql/<version>/main/*
+# 创建临时目录
+mkdir -p /var/lib/postgresql/<version>/main_new_20260415_150405
+
+# 复制备份文件到临时目录
+cp -r /backup/postgresql_20260415_150405/* /var/lib/postgresql/<version>/main_new_20260415_150405/
 ```
 
-### 2.3 复制备份文件
+### 2.3 验证临时目录
+
+代码通过 `validateDataDir()` 验证临时目录是否为有效的 PostgreSQL 数据目录（检查 `PG_VERSION` 文件）：
 
 ```bash
-cp -r /backup/postgresql_20260415_150405/* /var/lib/postgresql/<version>/main/
+# 验证特征文件是否存在
+ls /var/lib/postgresql/<version>/main_new_20260415_150405/PG_VERSION
 ```
 
-### 2.4 设置文件权限
+### 2.4 重命名旧数据目录并切换
 
 ```bash
-chown -R postgres:postgres /var/lib/postgresql/<version>/main
-find /var/lib/postgresql/<version>/main -type f -exec chmod 600 {} \;
-find /var/lib/postgresql/<version>/main -type d -exec chmod 700 {} \;
+# 重命名旧数据目录（保留备份）
+mv /var/lib/postgresql/<version>/main /var/lib/postgresql/<version>/main_old_20260415_150405
+
+# 切换到新数据目录
+mv /var/lib/postgresql/<version>/main_new_20260415_150405 /var/lib/postgresql/<version>/main
+```
+
+### 2.5 设置文件权限
+
+代码在 Linux 下使用 `chmod 755` 递归设置权限，在 Windows 下使用 `icacls`：
+
+**Linux 系统：**
+
+```bash
+# 代码实际使用 chmod 755（非 600/700）
+chmod -R 755 /var/lib/postgresql/<version>/main
 ```
 
 **Windows 系统：**
 
 ```bash
-icacls "C:\Program Files\PostgreSQL\<version>\data" /grant "postgres:(OI)(CI)F" /T
+icacls "C:\Program Files\PostgreSQL\<version>\data" /grant "Everyone:(OI)(CI)F" /T
 ```
 
-### 2.5 启动 PostgreSQL 服务
+### 2.6 启动 PostgreSQL 服务
 
 **Linux 系统：**
 
@@ -124,12 +150,22 @@ net start postgresql-x64-<version>
 
 | Go 方法 | 对应的底层命令 |
 | --- | --- |
-| `backupPhysical()` | 创建备份目录并调用 execPgBasebackup |
-| `execPgBasebackup()` | `pg_basebackup -D <dir> -X stream [-j <parallel>]` |
-| `restorePhysical()` | 停止服务 → 清空目录 → 复制文件 → 设置权限 → 启动服务 |
+| `backupPhysical()` | 创建备份目录 → 调用 `executePhysicalBackup()` → 统计备份大小 |
+| `executePhysicalBackup()` | 获取 pg_basebackup 路径 → 调用 `execPgBasebackup()` |
+| `execPgBasebackup()` | `pg_basebackup -D <dir> -X stream` |
+| `restorePhysical()` | 权限检查 → 参数校验 → 创建临时目录 → 复制备份到临时目录 → 验证临时目录 → 停止服务 → 重命名旧目录 → 切换新目录 → 设置权限 → 启动服务 → 输出清理提示；任何步骤失败都进行回滚 |
+| `isAdmin()` | 检查当前进程是否以管理员身份运行（物理还原前置检查） |
 | `stopPostgreSQLService()` | `pg_ctl stop -D <datadir>` |
-| `startPostgreSQLService()` | `pg_ctl start -D <datadir>` |
-| `setPostgreSQLFilePermissions()` | `chmod 755` 递归设置目录权限 |
+| `startPostgreSQLService()` | Linux: `pg_ctl start -D <datadir>` + `waitForPostgreSQL()`；Windows: 通过 `shellexec.StartWindowsService()` 启动服务 |
+| `startPostgreSQLServiceWindows()` | Windows 下通过服务名（默认 `postgresql-x64-18`，可通过 `SERVICE_NAME` 配置）启动 PostgreSQL 服务 |
+| `waitForPostgreSQL()` | 循环执行 `pg_ctl status -D <datadir>` 等待服务启动完成（最多 30 秒） |
+| `setPostgreSQLFilePermissions()` | Linux: `chmod 755` 递归设置目录权限；Windows: `icacls <datadir> /grant Everyone:(OI)(CI)F /T` |
+| `setPostgreSQLFilePermissionsWindows()` | Windows 下通过 `icacls` 设置文件权限 |
+| `validateDataDir()` | 验证数据目录合法性（必须为绝对路径、非根目录、非系统目录）和 PostgreSQL 特征文件（`PG_VERSION`） |
+| `getPgBasebackupPath()` | 获取 pg_basebackup 命令路径（优先从 `PG_BIN_PATH` 配置，其次从 PATH 查找） |
+| `getPgBasebackupPathOrError()` | 获取 pg_basebackup 路径，未找到则返回错误 |
+| `getPgVerifyBackupPathOrError()` | 获取 pg_verifybackup 路径，未找到则返回错误 |
+| `validatePhysicalBackup()` | `pg_verifybackup <backup_path>` 验证物理备份完整性 |
 
 ---
 

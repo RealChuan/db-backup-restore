@@ -56,8 +56,10 @@
 ### 1.1 全量备份
 
 ```sql
-BACKUP DATABASE [YourDatabaseName] TO DISK = N'C:\backup\YourDatabaseName_20260415_150405.bak' WITH COMPRESSION, STATS = 10;
+BACKUP DATABASE [YourDatabaseName] TO DISK = N'C:\backup\YourDatabaseName_20260415_150405.bak' WITH STATS = 10;
 ```
+
+> **说明**：当 `BackupOptions.EnableCompression` 为 `true` 时，会在 `WITH` 子句中追加 `COMPRESSION`。
 
 ### 1.2 差异备份
 
@@ -88,8 +90,10 @@ BACKUP LOG [YourDatabaseName] TO DISK = N'C:\backup\YourDatabaseName_log_2026041
 USE master;
 RESTORE DATABASE [YourDatabaseName]
 FROM DISK = N'C:\backup\YourDatabaseName_20260415_150405.bak'
-WITH REPLACE, STATS = 10;
+WITH STATS = 10;
 ```
+
+> **说明**：当 `RestoreOptions.Overwrite` 为 `true` 时，会在 `WITH` 子句中追加 `REPLACE`。
 
 ### 2.2 按时间点还原（Point-in-Time）
 
@@ -101,8 +105,10 @@ WITH REPLACE, STATS = 10;
 USE master;
 RESTORE DATABASE [YourDatabaseName]
 FROM DISK = N'C:\backup\YourDatabaseName_20260415_150405.bak'
-WITH REPLACE, STOPAT = '2026-04-15 15:30:00', STATS = 10;
+WITH STOPAT = '2026-04-15 15:30:00', STATS = 10;
 ```
+
+> **说明**：当 `RestoreOptions.Overwrite` 为 `true` 时，会在 `WITH` 子句中追加 `REPLACE`。
 
 ### 2.3 还原到新数据库
 
@@ -233,37 +239,66 @@ EXEC msdb.dbo.sp_delete_backuphistory @backup_set_id = 123;
 
 ### 3.9 检查备份状态并更新
 
+代码实际流程：查询 `msdb.dbo.backupset` 和 `msdb.dbo.backupmediafamily` 获取备份记录，对每条记录执行 `RESTORE VERIFYONLY`，验证失败则删除该备份记录及对应的备份文件。
+
+**步骤 1：查询备份记录**
+
 ```sql
-DECLARE @backupSetId INT;
-DECLARE backup_cursor CURSOR FOR
-SELECT backup_set_id FROM msdb.dbo.backupset;
-
-OPEN backup_cursor;
-FETCH NEXT FROM backup_cursor INTO @backupSetId;
-
-WHILE @@FETCH_STATUS = 0
-BEGIN
-    BEGIN TRY
-        RESTORE VERIFYONLY FROM DISK = (
-            SELECT physical_device_name
-            FROM msdb.dbo.backupmediafamily
-            WHERE media_set_id = (SELECT media_set_id FROM msdb.dbo.backupset WHERE backup_set_id = @backupSetId)
-        );
-    END TRY
-    BEGIN CATCH
-        UPDATE msdb.dbo.backupset SET is_valid = 0 WHERE backup_set_id = @backupSetId;
-    END CATCH
-    FETCH NEXT FROM backup_cursor INTO @backupSetId;
-END
-
-CLOSE backup_cursor;
-DEALLOCATE backup_cursor;
+SELECT
+    bs.backup_set_id,
+    bmf.physical_device_name
+FROM msdb.dbo.backupset bs
+JOIN msdb.dbo.backupmediafamily bmf ON bs.media_set_id = bmf.media_set_id
+WHERE bmf.device_type = 2;
 ```
+
+**步骤 2：对每条记录验证备份有效性**
+
+```sql
+RESTORE VERIFYONLY FROM DISK = N'<backupPath>' WITH NOUNLOAD;
+```
+
+**步骤 3：验证失败时删除备份记录和文件**
+
+```sql
+SET NOCOUNT ON;
+DELETE rfg FROM msdb.dbo.restorefilegroup rfg JOIN msdb.dbo.restorehistory rh ON rfg.restore_history_id = rh.restore_history_id WHERE rh.backup_set_id = <id>;
+DELETE rf FROM msdb.dbo.restorefile rf JOIN msdb.dbo.restorehistory rh ON rf.restore_history_id = rh.restore_history_id WHERE rh.backup_set_id = <id>;
+DELETE FROM msdb.dbo.restorehistory WHERE backup_set_id = <id>;
+DELETE FROM msdb.dbo.backupfilegroup WHERE backup_set_id = <id>;
+DELETE FROM msdb.dbo.backupfile WHERE backup_set_id = <id>;
+DELETE FROM msdb.dbo.backupset WHERE backup_set_id = <id>;
+```
+
+验证失败后，代码还会删除对应的物理备份文件。
 
 ### 3.10 删除无效的备份记录
 
+代码实际流程：查询备份记录，检查备份文件在文件系统中是否存在，不存在则删除对应的备份记录。
+
+**步骤 1：查询备份记录**
+
 ```sql
-DELETE FROM msdb.dbo.backupset WHERE is_valid = 0;
+SELECT
+    bs.backup_set_id,
+    bmf.physical_device_name
+FROM msdb.dbo.backupset bs
+JOIN msdb.dbo.backupmediafamily bmf ON bs.media_set_id = bmf.media_set_id
+WHERE bmf.device_type = 2;
+```
+
+**步骤 2：对每条记录检查文件是否存在（Go 代码中通过 `os.Stat` 检查）**
+
+**步骤 3：文件不存在时删除备份记录**
+
+```sql
+SET NOCOUNT ON;
+DELETE rfg FROM msdb.dbo.restorefilegroup rfg JOIN msdb.dbo.restorehistory rh ON rfg.restore_history_id = rh.restore_history_id WHERE rh.backup_set_id = <id>;
+DELETE rf FROM msdb.dbo.restorefile rf JOIN msdb.dbo.restorehistory rh ON rf.restore_history_id = rh.restore_history_id WHERE rh.backup_set_id = <id>;
+DELETE FROM msdb.dbo.restorehistory WHERE backup_set_id = <id>;
+DELETE FROM msdb.dbo.backupfilegroup WHERE backup_set_id = <id>;
+DELETE FROM msdb.dbo.backupfile WHERE backup_set_id = <id>;
+DELETE FROM msdb.dbo.backupset WHERE backup_set_id = <id>;
 ```
 
 ### 3.11 删除所有备份记录
@@ -290,19 +325,19 @@ DELETE FROM msdb.dbo.backupmediaset;
 
 | Go 方法                      | 对应的底层命令                                                                 |
 | ---------------------------- | ------------------------------------------------------------------------------ |
-| `Backup()`                   | `BACKUP DATABASE [...] TO DISK = N'<path>' WITH [...]`                         |
-| `Restore()`                  | `RESTORE DATABASE [...] FROM DISK = N'<path>' WITH [...]`                      |
-| `Restore(PointInTime)`       | `RESTORE DATABASE [...] WITH STOPAT = '<time>', [...]`                         |
-| `ListBackups()`              | `SELECT * FROM msdb.dbo.backupset JOIN msdb.dbo.backupmediafamily ...`         |
-| `DeleteBackup(backupID)`     | `DELETE FROM msdb.dbo.backupset WHERE backup_set_id = <id>;`                   |
-| `DeleteBackup(time)`         | `EXEC msdb.dbo.sp_delete_backuphistory @oldest_date = '<time>';`               |
-| `ValidateBackup(backupPath)` | `RESTORE VERIFYONLY FROM DISK = N'<path>';`                                    |
-| `GetBackupInfo(backupID)`    | `SELECT * FROM msdb.dbo.backupset WHERE backup_set_id = <id>;`                 |
+| `Backup()`                   | `BACKUP DATABASE [...] TO DISK = N'<path>' WITH [...]`（`EnableCompression` 时追加 `COMPRESSION`） |
+| `Restore()`                  | `RESTORE DATABASE [...] FROM DISK = N'<path>' WITH [...]`（`Overwrite` 时追加 `REPLACE`） |
+| `Restore(PointInTime)`       | `RESTORE DATABASE [...] WITH STOPAT = '<time>', [...]`（`Overwrite` 时追加 `REPLACE`） |
+| `ListBackups()`              | `SELECT ... FROM msdb.dbo.backupset JOIN msdb.dbo.backupmediafamily ...`（CSV 格式输出） |
+| `DeleteBackup(backupID)`     | 删除相关表记录 + 删除物理备份文件（`backup_set_id` 为正整数时）                |
+| `DeleteBackup(time)`         | `EXEC msdb.dbo.sp_delete_backuphistory @oldest_date = '<time>';` + 删除物理备份文件 |
+| `ValidateBackup(backupID)`   | `backupID` 为正整数时先查询路径，为文件路径时直接使用；`RESTORE VERIFYONLY FROM DISK = N'<path>';` |
+| `GetBackupInfo(backupID)`    | `backupID` 非空时 `SELECT * FROM msdb.dbo.backupset WHERE backup_set_id = <id>;`，为空时返回最近 10 条 |
 | `RegisterBackup(backupPath)` | `EXEC msdb.dbo.sp_add_backup_filehistory @file_name = N'<path>';`              |
 | `UnregisterBackup(backupID)` | `EXEC msdb.dbo.sp_delete_backuphistory @backup_set_id = <id>;`                 |
-| `VerifyBackupStatus()`       | 遍历所有备份执行 `RESTORE VERIFYONLY`，验证失败则删除对应记录                    |
+| `VerifyBackupStatus()`       | 查询备份记录，逐个执行 `RESTORE VERIFYONLY`，验证失败则删除记录及物理备份文件    |
 | `DeleteInvalidBackups()`     | 查询 msdb 备份记录，检查文件系统中对应文件是否存在，不存在则删除记录              |
-| `DeleteAllBackups()`         | 删除 msdb 中所有备份相关表（restorefilegroup、restorefile、restorehistory 等） |
+| `DeleteAllBackups()`         | 删除 msdb 中所有备份相关表（restorefilegroup、restorefile、restorehistory 等）+ 删除物理备份文件 |
 
 ---
 
@@ -352,7 +387,7 @@ EXEC xp_fileexist 'C:\backup\YourDatabaseName.bak';
 ```sql
 SELECT name
 FROM sys.databases
-WHERE name NOT IN ('tempdb')
+WHERE name NOT IN ('master', 'tempdb', 'model', 'msdb')
   AND state = 0
 ORDER BY name;
 ```

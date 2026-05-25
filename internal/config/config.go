@@ -2,22 +2,60 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
-	"db-backup-restore/internal/backup"
-	"db-backup-restore/pkg/utils"
+	"github.com/RealChuan/db-backup-restore/internal/logging"
 )
 
-type DatabaseConfig struct {
-	Type     string            `json:"type"`
-	Host     string            `json:"host"`
-	Port     int               `json:"port"`
-	User     string            `json:"user"`
-	Password string            `json:"password"`
-	Database string            `json:"database"`
-	SSLMode  string            `json:"ssl_mode"`
-	Extra    map[string]string `json:"extra"`
+// DBConfig 数据库连接配置
+type DBConfig struct {
+	Type      string            `json:"type"`        // 数据库类型：mysql, postgresql, oracle, mssql, dameng, kingbase, opengauss, gaussdb
+	Host      string            `json:"host"`        // 主机地址
+	Port      int               `json:"port"`        // 端口号
+	User      string            `json:"user"`        // 用户名
+	Password  string            `json:"password"`    // 密码
+	Database  string            `json:"database"`    // 默认数据库
+	SSLMode   string            `json:"ssl_mode"`    // SSL模式
+	Extra     map[string]string `json:"extra"`       // 其他连接参数
+	ExtraHelp string            `json:"_extra_help"` // 配置文件中的帮助注释，程序不使用
+}
+
+// DBType constants to avoid magic strings (mirrors backup package constants to prevent circular dependency).
+const (
+	dbTypeMySQL      = "mysql"
+	dbTypePostgreSQL = "postgresql"
+	dbTypeOracle     = "oracle"
+	dbTypeMSSQL      = "mssql"
+	defaultHost      = "localhost"
+)
+
+// DefaultPorts 各数据库默认端口映射
+var DefaultPorts = map[string]int{
+	dbTypeMySQL:      3306,
+	dbTypePostgreSQL: 5432,
+	dbTypeOracle:     1521,
+	dbTypeMSSQL:      1433,
+}
+
+// SetDefaults 为配置设置默认值
+func (c *DBConfig) SetDefaults() {
+	if c.Host == "" {
+		c.Host = defaultHost
+	}
+	if c.Port == 0 {
+		if defaultPort, exists := DefaultPorts[c.Type]; exists {
+			c.Port = defaultPort
+		}
+	}
+	if c.SSLMode == "" {
+		c.SSLMode = "disable"
+	}
+	if c.Extra == nil {
+		c.Extra = make(map[string]string)
+	}
 }
 
 type LogConfig struct {
@@ -33,9 +71,9 @@ type LogConfig struct {
 }
 
 type Config struct {
-	BaseBackupDir string                    `json:"base_backup_dir"`
-	Databases     map[string]DatabaseConfig `json:"databases"`
-	Log           *LogConfig                `json:"log"`
+	BaseBackupDir string              `json:"base_backup_dir"`
+	Databases     map[string]DBConfig `json:"databases"`
+	Log           *LogConfig          `json:"log"`
 }
 
 func LoadConfig(configPath string) (*Config, error) {
@@ -47,16 +85,30 @@ func LoadConfig(configPath string) (*Config, error) {
 
 	var cfg Config
 	decoder := json.NewDecoder(file)
+	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&cfg); err != nil {
 		return nil, err
 	}
 
 	cfg.setDefaults(configPath)
 
+	// 校验各数据库的 extra 参数
+	for name, dbCfg := range cfg.Databases {
+		dbCfg.SetDefaults()
+		if errs := dbCfg.ValidateExtra(); len(errs) > 0 {
+			var errMsgs []string
+			for _, e := range errs {
+				errMsgs = append(errMsgs, e.Error())
+			}
+			return nil, fmt.Errorf("数据库 %q 配置校验失败: %s", name, strings.Join(errMsgs, "; "))
+		}
+		cfg.Databases[name] = dbCfg
+	}
+
 	return &cfg, nil
 }
 
-func (cfg *Config) setDefaults(configPath string) {
+func (cfg *Config) setDefaults(_ string) {
 	if cfg.Log == nil {
 		cfg.Log = &LogConfig{
 			Level:         "info",
@@ -88,40 +140,37 @@ func (cfg *Config) setDefaults(configPath string) {
 	}
 
 	if cfg.Log.LogFile != "" && !filepath.IsAbs(cfg.Log.LogFile) {
-		exePath, _ := os.Executable()
+		exePath, err := os.Executable()
+		if err != nil {
+			return
+		}
 		exeDir := filepath.Dir(exePath)
 		cfg.Log.LogFile = filepath.Join(exeDir, cfg.Log.LogFile)
 	}
 	if cfg.Log.AuditLogFile != "" && !filepath.IsAbs(cfg.Log.AuditLogFile) {
-		exePath, _ := os.Executable()
+		exePath, err := os.Executable()
+		if err != nil {
+			return
+		}
 		exeDir := filepath.Dir(exePath)
 		cfg.Log.AuditLogFile = filepath.Join(exeDir, cfg.Log.AuditLogFile)
 	}
 }
 
-func (cfg *Config) GetDBConfig(dbType string) (*backup.DBConfig, error) {
+func (cfg *Config) GetDBConfig(dbType string) (*DBConfig, error) {
 	dbCfg, ok := cfg.Databases[dbType]
 	if !ok {
 		return nil, os.ErrNotExist
 	}
 
-	return &backup.DBConfig{
-		Type:     dbCfg.Type,
-		Host:     dbCfg.Host,
-		Port:     dbCfg.Port,
-		User:     dbCfg.User,
-		Password: dbCfg.Password,
-		Database: dbCfg.Database,
-		SSLMode:  dbCfg.SSLMode,
-		Extra:    dbCfg.Extra,
-	}, nil
+	return &dbCfg, nil
 }
 
-func (cfg *Config) GetLogConfig() *utils.LogConfig {
+func (cfg *Config) GetLogConfig() *logging.Config {
 	if cfg.Log == nil {
-		return utils.NewLogConfig()
+		return logging.DefaultConfig()
 	}
-	return &utils.LogConfig{
+	return &logging.Config{
 		Level:         cfg.Log.Level,
 		Output:        cfg.Log.Output,
 		Format:        cfg.Log.Format,

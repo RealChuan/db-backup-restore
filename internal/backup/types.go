@@ -3,6 +3,8 @@ package backup
 import (
 	"fmt"
 	"time"
+
+	"github.com/RealChuan/db-backup-restore/internal/config"
 )
 
 // BackupMode 定义备份模式（增量策略）
@@ -45,7 +47,6 @@ type BackupResult struct {
 	Duration   time.Duration     // 耗时
 	StartTime  time.Time         // 开始时间
 	EndTime    time.Time         // 结束时间
-	Error      error             // 错误信息
 	Metadata   map[string]string // 其他元数据（如 LSN、SCN、备份集ID）
 }
 
@@ -66,7 +67,6 @@ type RestoreResult struct {
 	Success       bool          // 是否成功
 	Duration      time.Duration // 耗时
 	RestoredToSCN string        // 还原到的SCN
-	Error         error
 }
 
 // BackupInfo 备份元信息
@@ -85,25 +85,8 @@ type BackupInfo struct {
 // ProgressCallback 进度回调函数
 type ProgressCallback func(percent float64, message string)
 
-// DBConfig 数据库连接配置
-type DBConfig struct {
-	Type     string            // 数据库类型：mysql, postgresql, oracle, mssql, dameng, kingbase, opengauss, gaussdb
-	Host     string            // 主机地址
-	Port     int               // 端口号
-	User     string            // 用户名
-	Password string            // 密码
-	Database string            // 默认数据库
-	SSLMode  string            // SSL模式
-	Extra    map[string]string // 其他连接参数
-}
-
-// DefaultPorts 各数据库默认端口映射
-var DefaultPorts = map[string]int{
-	"mysql":      3306,
-	"postgresql": 5432,
-	"oracle":     1521,
-	"mssql":      1433,
-}
+// DBConfig 数据库连接配置（类型别名，实际定义在 config 包）
+type DBConfig = config.DBConfig
 
 // ParseBackupMode 将字符串解析为 BackupMode
 func ParseBackupMode(s string) (BackupMode, error) {
@@ -131,22 +114,22 @@ func ParseBackupType(s string) (BackupType, error) {
 	}
 }
 
-// SetDefaults 为配置设置默认值
-func (c *DBConfig) SetDefaults() {
-	if c.Host == "" {
-		c.Host = "localhost"
-	}
-	if c.Port == 0 {
-		if defaultPort, exists := DefaultPorts[c.Type]; exists {
-			c.Port = defaultPort
-		} else {
-			c.Port = 0
-		}
-	}
-	if c.SSLMode == "" {
-		c.SSLMode = "disable"
-	}
-	if c.Extra == nil {
-		c.Extra = make(map[string]string)
+// OutputFormat 输出格式
+type OutputFormat string
+
+const (
+	OutputFormatText OutputFormat = "text"
+	OutputFormatJSON OutputFormat = "json"
+)
+
+// ParseOutputFormat 解析输出格式
+func ParseOutputFormat(s string) (OutputFormat, error) {
+	switch s {
+	case "text", "":
+		return OutputFormatText, nil
+	case "json":
+		return OutputFormatJSON, nil
+	default:
+		return "", fmt.Errorf("invalid output format: %s", s)
 	}
 }

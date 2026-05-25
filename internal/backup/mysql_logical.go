@@ -13,7 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"db-backup-restore/pkg/utils"
+	"github.com/RealChuan/db-backup-restore/internal/logging"
+	"github.com/RealChuan/db-backup-restore/pkg/shellexec"
 )
 
 // backupSingleDatabaseLogical 逻辑备份单个数据库
@@ -24,6 +25,10 @@ func (m *MySQLBackup) backupSingleDatabaseLogical(ctx context.Context, backupDir
 		Metadata:  make(map[string]string),
 	}
 
+	if err := sanitizeDatabaseName(databaseName); err != nil {
+		return nil, fmt.Errorf("invalid database name: %w", err)
+	}
+
 	if callback != nil {
 		callback(0, fmt.Sprintf("开始逻辑备份数据库 %s...", databaseName))
 	}
@@ -31,12 +36,15 @@ func (m *MySQLBackup) backupSingleDatabaseLogical(ctx context.Context, backupDir
 	backupFileName := GenerateBackupFilename(databaseName, "sql")
 	backupPath := filepath.Join(backupDir, backupFileName)
 
+	if _, err := sanitizeBackupPath(backupDir); err != nil {
+		return nil, fmt.Errorf("invalid backup directory: %w", err)
+	}
+
 	args := m.buildDumpCommandArgs()
 	args = append(args, databaseName)
 
 	if err := m.execMySQLDump(ctx, args, backupPath); err != nil {
-		result.Error = fmt.Errorf("逻辑备份失败: %w", err)
-		return result, result.Error
+		return nil, fmt.Errorf("逻辑备份失败: %w", err)
 	}
 
 	if callback != nil {
@@ -80,7 +88,7 @@ func (m *MySQLBackup) backupMultipleDatabasesLogical(ctx context.Context, backup
 
 		singleResult, err := m.backupSingleDatabaseLogical(ctx, backupDir, dbName, nil)
 		if err != nil {
-			utils.Warnf("逻辑备份数据库 %s 失败: %v, 继续备份其他数据库", dbName, err)
+			logging.Warn(fmt.Sprintf("逻辑备份数据库 %s 失败: %v, 继续备份其他数据库", dbName, err))
 			continue
 		}
 
@@ -93,8 +101,7 @@ func (m *MySQLBackup) backupMultipleDatabasesLogical(ctx context.Context, backup
 	}
 
 	if len(backupFiles) == 0 {
-		result.Error = errors.New("没有成功逻辑备份任何数据库")
-		return result, result.Error
+		return nil, errors.New("没有成功逻辑备份任何数据库")
 	}
 
 	result.BackupFile = strings.Join(backupFiles, ",")
@@ -135,13 +142,17 @@ func (m *MySQLBackup) restoreLogical(ctx context.Context, opts RestoreOptions, c
 	}
 
 	if backupFile == "" {
-		result.Error = errors.New("必须通过 --backup-identifier 参数指定备份文件路径")
-		return result, result.Error
+		return nil, errors.New("必须通过 --backup-identifier 参数指定备份文件路径")
 	}
 
+	cleanFile, err := sanitizeBackupPath(backupFile, ".sql")
+	if err != nil {
+		return nil, fmt.Errorf("invalid backup file path: %w", err)
+	}
+	backupFile = cleanFile
+
 	if _, err := os.Stat(backupFile); os.IsNotExist(err) {
-		result.Error = fmt.Errorf("备份文件不存在: %s", backupFile)
-		return result, result.Error
+		return nil, fmt.Errorf("备份文件不存在: %s", backupFile)
 	}
 
 	databaseName := opts.TargetDatabaseName
@@ -149,17 +160,19 @@ func (m *MySQLBackup) restoreLogical(ctx context.Context, opts RestoreOptions, c
 		databaseName = ExtractDatabaseName(backupFile)
 	}
 
+	if err := sanitizeDatabaseName(databaseName); err != nil {
+		return nil, fmt.Errorf("invalid target database name: %w", err)
+	}
+
 	inputFile, err := os.Open(backupFile)
 	if err != nil {
-		result.Error = fmt.Errorf("打开备份文件失败: %w", err)
-		return result, result.Error
+		return nil, fmt.Errorf("打开备份文件失败: %w", err)
 	}
 	defer inputFile.Close()
 
 	_, err = m.execMySQLFromFile(ctx, databaseName, inputFile)
 	if err != nil {
-		result.Error = fmt.Errorf("逻辑还原失败: %w", err)
-		return result, result.Error
+		return nil, fmt.Errorf("逻辑还原失败: %w", err)
 	}
 
 	if callback != nil {
@@ -186,10 +199,10 @@ func (m *MySQLBackup) getAllDatabases(ctx context.Context) ([]string, error) {
 		if line == "" || line == "Database" {
 			continue
 		}
-		if line == "information_schema" || line == "mysql" || line == "performance_schema" || line == "sys" {
+		if line == "information_schema" || line == DBTypeMySQL || line == "performance_schema" || line == "sys" {
 			continue
 		}
-		utils.Infof("发现数据库: |%s|", line)
+		logging.Info(fmt.Sprintf("发现数据库: |%s|", line))
 
 		databases = append(databases, line)
 	}
@@ -231,26 +244,25 @@ func (m *MySQLBackup) buildDumpCommandArgs() []string {
 // execSQL 执行 SQL 命令（通过 mysql）
 func (m *MySQLBackup) execSQL(ctx context.Context, sqlStatement string) (string, error) {
 	cmdStr := m.mysqlPath + " " + strings.Join(m.buildConnectionArgs(), " ") + " -e " + sqlStatement
-	utils.LogCommandInfo(cmdStr)
+	logging.LogCommandInfo(cmdStr)
 
 	args := m.buildConnectionArgs()
 	args = append(args, "-e", sqlStatement)
 
 	cmd := exec.CommandContext(ctx, m.mysqlPath, args...)
-	output, err := utils.ExecCommand(ctx, cmd)
-
+	output, err := shellexec.ExecCommand(ctx, cmd)
 	if err != nil {
-		utils.LogCommand(cmdStr, output, true)
+		logging.LogCommand(cmdStr, output, true)
 		return output, fmt.Errorf("mysql 执行失败: %w", err)
 	}
-	utils.LogCommand(cmdStr, output, false)
+	logging.LogCommand(cmdStr, output, false)
 	return output, nil
 }
 
 // execMySQLDump 执行 mysqldump 命令，直接写入文件
 func (m *MySQLBackup) execMySQLDump(ctx context.Context, args []string, outputFile string) error {
 	cmdStr := m.mysqldumpPath + " " + strings.Join(args, " ")
-	utils.LogCommandInfo(cmdStr)
+	logging.LogCommandInfo(cmdStr)
 
 	cmd := exec.CommandContext(ctx, m.mysqldumpPath, args...)
 
@@ -271,19 +283,22 @@ func (m *MySQLBackup) execMySQLDump(ctx context.Context, args []string, outputFi
 		return err
 	}
 
-	stderrBytes, _ := io.ReadAll(stderr)
+	stderrBytes, err := io.ReadAll(stderr)
+	if err != nil {
+		return fmt.Errorf("读取命令错误输出失败: %w", err)
+	}
 
-	stderrOutput, _ := utils.ConvertGBKToUTF8(stderrBytes)
+	stderrOutput, _ := shellexec.ConvertGBKToUTF8(stderrBytes)
 	if err := cmd.Wait(); err != nil {
-		utils.LogCommand(cmdStr, stderrOutput, true)
+		logging.LogCommand(cmdStr, stderrOutput, true)
 		return fmt.Errorf("mysqldump 执行失败: %w, stderr: %s", err, stderrOutput)
 	}
 
 	if stderrOutput != "" {
-		utils.LogCommand(cmdStr, stderrOutput, false)
+		logging.LogCommand(cmdStr, stderrOutput, false)
 	}
 
-	utils.Infof("mysqldump 完成，输出文件: %s", outputFile)
+	logging.Info(fmt.Sprintf("mysqldump 完成，输出文件: %s", outputFile))
 	return nil
 }
 
@@ -292,16 +307,15 @@ func (m *MySQLBackup) execMySQLFromFile(ctx context.Context, databaseName string
 	args := m.buildConnectionArgs()
 	args = append(args, databaseName)
 	cmdStr := m.mysqlPath + " " + strings.Join(args, " ")
-	utils.LogCommandInfo(cmdStr)
+	logging.LogCommandInfo(cmdStr)
 
 	cmd := exec.CommandContext(ctx, m.mysqlPath, args...)
 	cmd.Stdin = inputFile
-	output, err := utils.ExecCommand(ctx, cmd)
-
+	output, err := shellexec.ExecCommand(ctx, cmd)
 	if err != nil {
-		utils.LogCommand(cmdStr, output, true)
+		logging.LogCommand(cmdStr, output, true)
 		return output, fmt.Errorf("mysql 还原失败: %w", err)
 	}
-	utils.LogCommand(cmdStr, output, false)
+	logging.LogCommand(cmdStr, output, false)
 	return output, nil
 }

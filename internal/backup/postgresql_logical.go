@@ -12,7 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"db-backup-restore/pkg/utils"
+	"github.com/RealChuan/db-backup-restore/internal/logging"
+	"github.com/RealChuan/db-backup-restore/pkg/shellexec"
 )
 
 // execSQL 执行 SQL 命令（通过 psql）
@@ -22,25 +23,24 @@ func (p *PostgreSQLBackup) execSQL(ctx context.Context, sqlStatement string) (st
 		args = append(args, "-d", p.config.Database)
 	}
 	cmdStr := p.psqlPath + " " + strings.Join(args, " ")
-	utils.LogCommandInfo(cmdStr)
+	logging.LogCommandInfo(cmdStr)
 
 	cmd := exec.CommandContext(ctx, p.psqlPath, args...)
 	cmd.Env = append(os.Environ(), p.env...)
 
-	output, err := utils.ExecCommandWithEncoding(ctx, cmd, false)
-
+	output, err := shellexec.ExecCommandWithEncoding(ctx, cmd, false)
 	if err != nil {
-		utils.LogCommand(cmdStr, output, true)
+		logging.LogCommand(cmdStr, output, true)
 		return output, fmt.Errorf("psql 执行失败: %w", err)
 	}
-	utils.LogCommand(cmdStr, output, false)
+	logging.LogCommand(cmdStr, output, false)
 	return output, nil
 }
 
 // execPgDump 执行 pg_dump 命令
 func (p *PostgreSQLBackup) execPgDump(ctx context.Context, args []string, outputFile string) error {
 	cmdStr := p.pgDumpPath + " " + strings.Join(args, " ")
-	utils.LogCommandInfo(cmdStr)
+	logging.LogCommandInfo(cmdStr)
 
 	cmd := exec.CommandContext(ctx, p.pgDumpPath, args...)
 	cmd.Env = append(os.Environ(), p.env...)
@@ -71,19 +71,22 @@ func (p *PostgreSQLBackup) execPgDump(ctx context.Context, args []string, output
 		return err
 	}
 
-	stderrBytes, _ := io.ReadAll(stderr)
+	stderrBytes, err := io.ReadAll(stderr)
+	if err != nil {
+		return fmt.Errorf("读取命令错误输出失败: %w", err)
+	}
 	stderrOutput := string(stderrBytes)
 
 	if err := cmd.Wait(); err != nil {
-		utils.LogCommand(cmdStr, stderrOutput, true)
+		logging.LogCommand(cmdStr, stderrOutput, true)
 		return fmt.Errorf("pg_dump 执行失败: %w, stderr: %s", err, stderrOutput)
 	}
 
 	if stderrOutput != "" {
-		utils.LogCommand(cmdStr, stderrOutput, false)
+		logging.LogCommand(cmdStr, stderrOutput, false)
 	}
 
-	utils.Infof("pg_dump 完成，输出: %s", outputFile)
+	logging.Info(fmt.Sprintf("pg_dump 完成，输出: %s", outputFile))
 	return nil
 }
 
@@ -91,18 +94,17 @@ func (p *PostgreSQLBackup) execPgDump(ctx context.Context, args []string, output
 func (p *PostgreSQLBackup) execPsqlFromFile(ctx context.Context, databaseName string, inputFile io.Reader) (string, error) {
 	args := []string{"-d", databaseName}
 	cmdStr := p.psqlPath + " " + strings.Join(args, " ")
-	utils.LogCommandInfo(cmdStr)
+	logging.LogCommandInfo(cmdStr)
 
 	cmd := exec.CommandContext(ctx, p.psqlPath, args...)
 	cmd.Env = append(os.Environ(), p.env...)
 	cmd.Stdin = inputFile
-	output, err := utils.ExecCommandWithEncoding(ctx, cmd, false)
-
+	output, err := shellexec.ExecCommandWithEncoding(ctx, cmd, false)
 	if err != nil {
-		utils.LogCommand(cmdStr, output, true)
+		logging.LogCommand(cmdStr, output, true)
 		return output, fmt.Errorf("psql 还原失败: %w", err)
 	}
-	utils.LogCommand(cmdStr, output, false)
+	logging.LogCommand(cmdStr, output, false)
 	return output, nil
 }
 
@@ -114,12 +116,20 @@ func (p *PostgreSQLBackup) backupSingleDatabaseLogical(ctx context.Context, back
 		Metadata:  make(map[string]string),
 	}
 
+	if err := sanitizeDatabaseName(databaseName); err != nil {
+		return nil, fmt.Errorf("invalid database name: %w", err)
+	}
+
 	if callback != nil {
 		callback(0, fmt.Sprintf("开始逻辑备份数据库 %s...", databaseName))
 	}
 
 	backupFileName := GenerateBackupFilename(databaseName, "sql")
 	backupPath := filepath.Join(backupDir, backupFileName)
+
+	if _, err := sanitizeBackupPath(backupDir); err != nil {
+		return nil, fmt.Errorf("invalid backup directory: %w", err)
+	}
 
 	args := []string{
 		"-F", "p",
@@ -130,8 +140,7 @@ func (p *PostgreSQLBackup) backupSingleDatabaseLogical(ctx context.Context, back
 	}
 
 	if err := p.execPgDump(ctx, args, backupPath); err != nil {
-		result.Error = fmt.Errorf("逻辑备份失败: %w", err)
-		return result, result.Error
+		return nil, fmt.Errorf("逻辑备份失败: %w", err)
 	}
 
 	if callback != nil {
@@ -175,7 +184,7 @@ func (p *PostgreSQLBackup) backupMultipleDatabasesLogical(ctx context.Context, b
 
 		singleResult, err := p.backupSingleDatabaseLogical(ctx, backupDir, dbName, nil)
 		if err != nil {
-			utils.Warnf("逻辑备份数据库 %s 失败: %v, 继续备份其他数据库", dbName, err)
+			logging.Warn(fmt.Sprintf("逻辑备份数据库 %s 失败: %v, 继续备份其他数据库", dbName, err))
 			continue
 		}
 
@@ -188,8 +197,7 @@ func (p *PostgreSQLBackup) backupMultipleDatabasesLogical(ctx context.Context, b
 	}
 
 	if len(backupFiles) == 0 {
-		result.Error = errors.New("没有成功逻辑备份任何数据库")
-		return result, result.Error
+		return nil, errors.New("没有成功逻辑备份任何数据库")
 	}
 
 	result.BackupFile = strings.Join(backupFiles, ",")
@@ -230,13 +238,17 @@ func (p *PostgreSQLBackup) restoreLogical(ctx context.Context, opts RestoreOptio
 	}
 
 	if backupFile == "" {
-		result.Error = errors.New("必须通过 --backup-identifier 参数指定备份文件路径")
-		return result, result.Error
+		return nil, errors.New("必须通过 --backup-identifier 参数指定备份文件路径")
 	}
 
+	cleanFile, err := sanitizeBackupPath(backupFile, ".sql")
+	if err != nil {
+		return nil, fmt.Errorf("invalid backup file path: %w", err)
+	}
+	backupFile = cleanFile
+
 	if _, err := os.Stat(backupFile); os.IsNotExist(err) {
-		result.Error = fmt.Errorf("备份文件不存在: %s", backupFile)
-		return result, result.Error
+		return nil, fmt.Errorf("备份文件不存在: %s", backupFile)
 	}
 
 	databaseName := opts.TargetDatabaseName
@@ -244,24 +256,25 @@ func (p *PostgreSQLBackup) restoreLogical(ctx context.Context, opts RestoreOptio
 		databaseName = ExtractDatabaseName(backupFile)
 	}
 
+	if err := sanitizeDatabaseName(databaseName); err != nil {
+		return nil, fmt.Errorf("invalid target database name: %w", err)
+	}
+
 	if !opts.Overwrite {
 		if err := p.createDatabaseIfNotExists(ctx, databaseName); err != nil {
-			result.Error = fmt.Errorf("创建数据库失败: %w", err)
-			return result, result.Error
+			return nil, fmt.Errorf("创建数据库失败: %w", err)
 		}
 	}
 
 	inputFile, err := os.Open(backupFile)
 	if err != nil {
-		result.Error = fmt.Errorf("打开备份文件失败: %w", err)
-		return result, result.Error
+		return nil, fmt.Errorf("打开备份文件失败: %w", err)
 	}
 	defer inputFile.Close()
 
 	_, err = p.execPsqlFromFile(ctx, databaseName, inputFile)
 	if err != nil {
-		result.Error = fmt.Errorf("逻辑还原失败: %w", err)
-		return result, result.Error
+		return nil, fmt.Errorf("逻辑还原失败: %w", err)
 	}
 
 	if callback != nil {
@@ -300,7 +313,7 @@ func (p *PostgreSQLBackup) getAllDatabases(ctx context.Context) ([]string, error
 		if strings.HasPrefix(line, "(") && strings.HasSuffix(line, ")") {
 			continue
 		}
-		utils.Infof("发现数据库: |%s|", line)
+		logging.Info(fmt.Sprintf("发现数据库: |%s|", line))
 
 		databases = append(databases, line)
 	}
@@ -310,6 +323,10 @@ func (p *PostgreSQLBackup) getAllDatabases(ctx context.Context) ([]string, error
 
 // createDatabaseIfNotExists 如果数据库不存在则创建
 func (p *PostgreSQLBackup) createDatabaseIfNotExists(ctx context.Context, databaseName string) error {
+	if err := sanitizeDatabaseName(databaseName); err != nil {
+		return fmt.Errorf("invalid database name: %w", err)
+	}
+
 	existsSQL := fmt.Sprintf("SELECT 1 FROM pg_database WHERE datname = '%s';", databaseName)
 	output, err := p.execSQL(ctx, existsSQL)
 	if err != nil {

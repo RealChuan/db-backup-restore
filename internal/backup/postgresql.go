@@ -6,11 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
-	"time"
 
-	"db-backup-restore/pkg/utils"
+	"github.com/RealChuan/db-backup-restore/internal/logging"
+	"github.com/RealChuan/db-backup-restore/pkg/fileutil"
 )
 
 type PostgreSQLBackup struct {
@@ -22,6 +21,7 @@ type PostgreSQLBackup struct {
 	pgVerifyBackupPath string
 	pgCtlPath          string
 	env                []string
+	fsManager          *FileSystemBackupManager
 }
 
 func NewPostgreSQLBackup(config *DBConfig) (*PostgreSQLBackup, error) {
@@ -36,13 +36,13 @@ func NewPostgreSQLBackup(config *DBConfig) (*PostgreSQLBackup, error) {
 	pgVerifyBackupPath := "pg_verifybackup"
 	pgCtlPath := "pg_ctl"
 
-	if val, ok := config.Extra["PG_BIN_PATH"]; ok && val != "" {
-		psqlPath = utils.AddExeExt(filepath.Join(val, "psql"))
-		pgDumpPath = utils.AddExeExt(filepath.Join(val, "pg_dump"))
-		pgDumpallPath = utils.AddExeExt(filepath.Join(val, "pg_dumpall"))
-		pgBasebackupPath = utils.AddExeExt(filepath.Join(val, "pg_basebackup"))
-		pgVerifyBackupPath = utils.AddExeExt(filepath.Join(val, "pg_verifybackup"))
-		pgCtlPath = utils.AddExeExt(filepath.Join(val, "pg_ctl"))
+	if val := config.GetExtraTyped().PGBinPath(); val != "" {
+		psqlPath = fileutil.AddExeExt(filepath.Join(val, "psql"))
+		pgDumpPath = fileutil.AddExeExt(filepath.Join(val, "pg_dump"))
+		pgDumpallPath = fileutil.AddExeExt(filepath.Join(val, "pg_dumpall"))
+		pgBasebackupPath = fileutil.AddExeExt(filepath.Join(val, "pg_basebackup"))
+		pgVerifyBackupPath = fileutil.AddExeExt(filepath.Join(val, "pg_verifybackup"))
+		pgCtlPath = fileutil.AddExeExt(filepath.Join(val, "pg_ctl"))
 	}
 
 	env := []string{
@@ -66,28 +66,21 @@ func NewPostgreSQLBackup(config *DBConfig) (*PostgreSQLBackup, error) {
 		pgVerifyBackupPath: pgVerifyBackupPath,
 		pgCtlPath:          pgCtlPath,
 		env:                env,
+		fsManager:          NewFileSystemBackupManager("", "postgresql", nil),
 	}, nil
 }
 
 func (p *PostgreSQLBackup) Backup(ctx context.Context, opts BackupOptions, callback ProgressCallback) (*BackupResult, error) {
-	startTime := time.Now()
-	result := &BackupResult{
-		StartTime: startTime,
-		Metadata:  make(map[string]string),
-	}
-
 	if opts.Mode == BackupModeIncremental || opts.Mode == BackupModeDifferential {
-		utils.Infof("PostgreSQL 不支持增量/差异备份模式，将使用全量备份")
+		logging.Info("PostgreSQL 不支持增量/差异备份模式，将使用全量备份")
 	}
 
 	backupDir := opts.TargetPath
 	if backupDir == "" {
-		result.Error = errors.New("必须通过 -target-path 参数指定备份路径")
-		return result, result.Error
+		return nil, errors.New("必须通过 -target-path 参数指定备份路径")
 	}
-	if err := os.MkdirAll(backupDir, 0755); err != nil {
-		result.Error = err
-		return result, err
+	if err := os.MkdirAll(backupDir, 0o755); err != nil {
+		return nil, err
 	}
 
 	databaseName := p.config.Database
@@ -96,7 +89,7 @@ func (p *PostgreSQLBackup) Backup(ctx context.Context, opts BackupOptions, callb
 	switch opts.Type {
 	case BackupTypePhysical:
 		if len(databases) > 0 {
-			utils.Warnf("物理备份将备份整个 PostgreSQL 实例，指定的数据库列表 [%s] 将被忽略", strings.Join(databases, ", "))
+			logging.Warn(fmt.Sprintf("物理备份将备份整个 PostgreSQL 实例，指定的数据库列表 [%s] 将被忽略", strings.Join(databases, ", ")))
 		}
 		return p.backupPhysical(ctx, backupDir, callback)
 
@@ -110,8 +103,7 @@ func (p *PostgreSQLBackup) Backup(ctx context.Context, opts BackupOptions, callb
 		return p.backupMultipleDatabasesLogical(ctx, backupDir, databases, callback)
 
 	default:
-		result.Error = errors.New("PostgreSQL 仅支持 logical 和 physical 备份类型")
-		return result, result.Error
+		return nil, errors.New("PostgreSQL 仅支持 logical 和 physical 备份类型")
 	}
 }
 
@@ -138,171 +130,47 @@ func (p *PostgreSQLBackup) Restore(ctx context.Context, opts RestoreOptions, cal
 	}
 
 	if isDir {
-		return p.restorePhysical(opts, callback)
+		return p.restorePhysical(ctx, opts, callback)
 	}
 
 	return p.restoreLogical(ctx, opts, callback)
 }
 
+// ListBackups 列出所有备份（委托给 FileSystemBackupManager）
 func (p *PostgreSQLBackup) ListBackups(ctx context.Context, opts ...BackupOptions) ([]BackupInfo, error) {
-	backupDir := p.getBackupDir(opts)
-	if backupDir == "" {
-		return nil, errors.New("必须通过 opts.TargetPath 指定备份目录")
-	}
-
-	var backups []BackupInfo
-
-	files, err := filepath.Glob(filepath.Join(backupDir, "*.sql*"))
-	if err != nil {
-		return nil, fmt.Errorf("列出逻辑备份失败: %w", err)
-	}
-
-	for _, file := range files {
-		info, err := os.Stat(file)
-		if err != nil {
-			continue
-		}
-
-		bi := BackupInfo{
-			BackupID:       filepath.Base(file),
-			CompletionTime: info.ModTime(),
-			Size:           info.Size(),
-			BackupPath:     file,
-			BackupType:     "LOGICAL",
-		}
-		backups = append(backups, bi)
-	}
-
-	dirs, err := filepath.Glob(filepath.Join(backupDir, "*_physical"))
-	if err != nil {
-		return nil, fmt.Errorf("列出物理备份失败: %w", err)
-	}
-
-	for _, dir := range dirs {
-		info, err := os.Stat(dir)
-		if err != nil || !info.IsDir() {
-			continue
-		}
-
-		bi := BackupInfo{
-			BackupID:       filepath.Base(dir),
-			CompletionTime: info.ModTime(),
-			Size:           utils.GetDirSize(dir),
-			BackupPath:     dir,
-			BackupType:     "PHYSICAL",
-		}
-		backups = append(backups, bi)
-	}
-
-	return backups, nil
+	return p.fsManager.ListBackups(ctx, p.getBackupDir(opts))
 }
 
+// DeleteBackup 删除指定备份（委托给 FileSystemBackupManager）
 func (p *PostgreSQLBackup) DeleteBackup(ctx context.Context, identifier string, opts ...BackupOptions) error {
-	var backupPath string
-	if filepath.IsAbs(identifier) {
-		backupPath = identifier
-	} else {
-		backupDir := p.getBackupDir(opts)
-		if backupDir == "" {
-			return errors.New("必须通过 opts.TargetPath 指定备份目录或提供绝对路径")
-		}
-		backupPath = filepath.Join(backupDir, identifier)
-	}
-
-	info, err := os.Stat(backupPath)
-	if err != nil {
-		return fmt.Errorf("备份不存在: %w", err)
-	}
-
-	if info.IsDir() {
-		return os.RemoveAll(backupPath)
-	}
-
-	return os.Remove(backupPath)
+	return p.fsManager.DeleteBackup(ctx, identifier, p.getBackupDir(opts))
 }
 
+// GetBackupInfo 获取指定备份的详细信息（委托给 FileSystemBackupManager）
 func (p *PostgreSQLBackup) GetBackupInfo(ctx context.Context, backupID string, opts ...BackupOptions) (map[string]string, error) {
-	if backupID == "" {
-		return nil, errors.New("必须指定备份文件路径")
-	}
-
-	var backupPath string
-	if filepath.IsAbs(backupID) {
-		backupPath = backupID
-	} else {
-		backupDir := p.getBackupDir(opts)
-		if backupDir == "" {
-			return nil, errors.New("必须通过 opts.TargetPath 指定备份目录或提供绝对路径")
-		}
-		backupPath = filepath.Join(backupDir, backupID)
-	}
-
-	info, err := os.Stat(backupPath)
-	if err != nil {
-		return nil, fmt.Errorf("获取备份信息失败: %w", err)
-	}
-
-	result := make(map[string]string)
-	result["path"] = backupPath
-	result["size"] = strconv.FormatInt(info.Size(), 10)
-	result["mod_time"] = info.ModTime().Format(time.RFC3339)
-
-	if info.IsDir() {
-		result["backup_type"] = "PHYSICAL"
-		result["size"] = strconv.FormatInt(utils.GetDirSize(backupPath), 10)
-	} else {
-		result["backup_type"] = "LOGICAL"
-	}
-
-	return result, nil
+	return p.fsManager.GetBackupInfo(ctx, backupID, p.getBackupDir(opts))
 }
 
+// DeleteAllBackups 删除所有备份（委托给 FileSystemBackupManager）
 func (p *PostgreSQLBackup) DeleteAllBackups(ctx context.Context, opts ...BackupOptions) error {
-	backupDir := p.getBackupDir(opts)
-	if backupDir == "" {
-		return errors.New("必须通过 opts.TargetPath 指定备份目录")
-	}
-
-	files, err := filepath.Glob(filepath.Join(backupDir, "*.sql*"))
-	if err != nil {
-		return fmt.Errorf("列出逻辑备份失败: %w", err)
-	}
-
-	for _, file := range files {
-		if err := os.Remove(file); err != nil {
-			utils.Warnf("删除逻辑备份失败: %v", err)
-		}
-	}
-
-	dirs, err := filepath.Glob(filepath.Join(backupDir, "*_physical"))
-	if err != nil {
-		return fmt.Errorf("列出物理备份失败: %w", err)
-	}
-
-	for _, dir := range dirs {
-		if err := os.RemoveAll(dir); err != nil {
-			utils.Warnf("删除物理备份失败: %v", err)
-		}
-	}
-
-	return nil
+	return p.fsManager.DeleteAllBackups(ctx, p.getBackupDir(opts))
 }
 
 func (p *PostgreSQLBackup) ValidateBackup(ctx context.Context, backupID string, opts ...BackupOptions) error {
 	if len(opts) > 0 && opts[0].Type == BackupTypeLogical {
-		utils.Errorf("ValidateBackup 不支持逻辑备份，仅支持物理备份")
+		logging.Error("ValidateBackup 不支持逻辑备份，仅支持物理备份")
 		return errors.New("ValidateBackup 不支持逻辑备份，仅支持物理备份")
 	}
 
 	return p.validatePhysicalBackup(ctx, backupID, opts...)
 }
 
-func init() {
+func registerPostgreSQLDriver() {
 	RegisterDriver(DriverMetadata{
-		Name:                 "postgresql",
-		Version:              "1.0.0",
+		Name:                 DBTypePostgreSQL,
+		Version:              versionXML,
 		Description:          "PostgreSQL 数据库备份驱动，支持 pg_dump 逻辑备份和 pg_basebackup 物理备份",
-		SupportedActions:     []string{"backup", "restore", "list", "delete", "info", "delete-all"},
+		SupportedActions:     []string{backupTypeXML, actionRestore, actionList, actionDelete, actionInfo, actionDeleteAll},
 		SupportedBackupTypes: []BackupType{BackupTypeLogical, BackupTypePhysical},
 	}, func(config *DBConfig) (DatabaseBackup, error) {
 		return NewPostgreSQLBackup(config)

@@ -50,11 +50,20 @@ pg_dump -h hostname -p port -U username -d db2 --clean --if-exists -f /backup/db
 
 ### 1.3 备份所有数据库
 
+代码实现为：先通过 `getAllDatabases()` 获取所有非模板、非 `postgres` 的数据库列表，再逐个调用 `pg_dump` 备份（而非使用 `pg_dumpall`）：
+
 ```bash
-pg_dumpall -h hostname -p port -U username -f /backup/all_databases_20260415_150405.sql
+# 实际执行方式：逐个数据库调用 pg_dump
+pg_dump -h hostname -p port -U username -d db1 --clean --if-exists -F p -f /backup/db1_20260415_150405.sql
+pg_dump -h hostname -p port -U username -d db2 --clean --if-exists -F p -f /backup/db2_20260415_150405.sql
+# ...
 ```
 
+> **注意**：代码中 `pgDumpallPath` 字段虽已定义，但 `backupAllDatabasesLogical()` 实际未使用 `pg_dumpall`，而是逐库调用 `pg_dump`。
+
 ### 1.4 并行备份
+
+> **注意**：当前代码的 `backupSingleDatabaseLogical()` 固定使用 `-F p`（纯文本格式），不支持 `-j` 并行选项。以下命令仅为 `pg_dump` 工具本身的能力说明，代码中尚未实现。
 
 ```bash
 pg_dump -h hostname -p port -U username -d database_name -F d -j 4 -f /backup/database_name_20260415_150405
@@ -70,16 +79,26 @@ pg_dump -h hostname -p port -U username -d database_name -F d -j 4 -f /backup/da
 
 ### 2.1 还原到原数据库
 
+代码通过 `execPsqlFromFile()` 将备份文件内容通过 stdin 管道传递给 psql（而非 `-f` 参数）：
+
 ```bash
-psql -h hostname -p port -U username -d database_name -f /backup/database_name_20260415_150405.sql
+# 代码实际执行方式：通过 stdin 管道
+psql -h hostname -p port -U username -d database_name < /backup/database_name_20260415_150405.sql
 ```
 
 ### 2.2 还原到新数据库
 
+代码通过 `RestoreOptions.TargetDatabaseName` 指定目标数据库名，通过 `RestoreOptions.Overwrite` 控制是否跳过自动创建数据库：
+
 ```bash
+# 若 Overwrite 为 false（默认），代码会先调用 createDatabaseIfNotExists() 创建数据库
 createdb -h hostname -p port -U username new_database_name
-psql -h hostname -p port -U username -d new_database_name -f /backup/database_name_20260415_150405.sql
+
+# 然后通过 stdin 管道还原
+psql -h hostname -p port -U username -d new_database_name < /backup/database_name_20260415_150405.sql
 ```
+
+> **注意**：若未指定 `TargetDatabaseName`，代码会通过 `ExtractDatabaseName()` 从备份文件名中自动提取数据库名。
 
 ---
 
@@ -91,12 +110,15 @@ psql -h hostname -p port -U username -d new_database_name -f /backup/database_na
 
 | Go 方法 | 对应的底层命令 |
 | --- | --- |
-| `backupSingleDatabaseLogical()` | `pg_dump -h <host> -p <port> -U <user> -d <database> -F p --clean --if-exists -f <path>` |
-| `backupMultipleDatabasesLogical()` | 循环执行 pg_dump 备份多个数据库 |
-| `backupAllDatabasesLogical()` | 获取数据库列表后循环执行 pg_dump |
-| `restoreLogical()` | `psql -h <host> -p <port> -U <user> -d <database> -f <backup_file>` |
-| `getAllDatabases()` | `psql -c "SELECT datname FROM pg_database WHERE datistemplate = false;"` |
-| `createDatabaseIfNotExists()` | `psql -c "CREATE DATABASE <name>;"` |
+| `backupSingleDatabaseLogical()` | `pg_dump -F p --clean --if-exists -d <database> -f <path>` |
+| `backupMultipleDatabasesLogical()` | 循环调用 `backupSingleDatabaseLogical()` 备份多个数据库 |
+| `backupAllDatabasesLogical()` | 调用 `getAllDatabases()` 获取数据库列表后，委托给 `backupMultipleDatabasesLogical()` |
+| `restoreLogical()` | `psql -d <database>` 通过 stdin 管道读入备份文件（非 `-f` 参数） |
+| `getAllDatabases()` | `psql -c "SELECT datname FROM pg_database WHERE datistemplate = false;"`，并过滤掉 `postgres` 数据库 |
+| `createDatabaseIfNotExists()` | 先查询 `SELECT 1 FROM pg_database WHERE datname = '<name>'`，不存在则执行 `CREATE DATABASE "<name>"` |
+| `execSQL()` | `psql -c <sql>` 执行 SQL 命令（内部辅助方法） |
+| `execPgDump()` | 执行 `pg_dump` 命令，支持纯文本和目录输出格式（内部辅助方法） |
+| `execPsqlFromFile()` | `psql -d <database>` 通过 stdin 管道读入文件内容（内部辅助方法） |
 
 ---
 
