@@ -1,6 +1,6 @@
 //go:build linux || darwin
 
-package utils
+package fileutil
 
 import "os"
 

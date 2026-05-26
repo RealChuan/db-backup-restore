@@ -1,9 +1,9 @@
-package utils
+package shellexec
 
 import (
-	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -32,13 +32,13 @@ func ConvertGBKToUTF8(data []byte) (string, error) {
 // ExecCommand 执行命令并处理输出的字符编码（只返回 stdout）
 // 无论命令是否成功，都返回 stdout 和 error
 // 默认进行 GBK 转 UTF8 转换
-func ExecCommand(ctx context.Context, cmd *exec.Cmd) (string, error) {
-	return ExecCommandWithEncoding(ctx, cmd, true)
+func ExecCommand(cmd *exec.Cmd) (string, error) {
+	return ExecCommandWithEncoding(cmd, true)
 }
 
 // ExecCommandWithEncoding 执行命令并处理输出的字符编码
 // convertGBK: 是否将 GBK 编码转换为 UTF8
-func ExecCommandWithEncoding(ctx context.Context, cmd *exec.Cmd, convertGBK bool) (string, error) {
+func ExecCommandWithEncoding(cmd *exec.Cmd, convertGBK bool) (string, error) {
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return "", err
@@ -66,7 +66,7 @@ func ExecCommandWithEncoding(ctx context.Context, cmd *exec.Cmd, convertGBK bool
 	}
 
 	if stderrOutput != "" {
-		Warnf("命令执行警告: %s", stderrOutput)
+		slog.Warn("命令执行警告", "stderr", stderrOutput)
 	}
 
 	if err := cmd.Wait(); err != nil {

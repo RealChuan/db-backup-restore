@@ -1,18 +1,22 @@
 package backup
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"time"
 
-	"db-backup-restore/pkg/utils"
+	"github.com/RealChuan/db-backup-restore/internal/logging"
 )
 
+// ErrorType 错误类型
 type ErrorType string
 
 const (
 	ErrorTypeNotSupported ErrorType = "NOT_SUPPORTED"
 )
 
+// BackupError 备份/还原操作错误
 type BackupError struct {
 	Type      ErrorType
 	Op        string
@@ -35,27 +39,30 @@ func (e *BackupError) Unwrap() error {
 	return e.Cause
 }
 
-func NewNotSupportedError(op, dbType string) error {
+// NewNotSupportedError 创建不支持操作错误
+func NewNotSupportedError(ctx context.Context, op, dbType string) error {
 	return &BackupError{
 		Type:      ErrorTypeNotSupported,
 		Op:        op,
 		DBType:    dbType,
 		Message:   fmt.Sprintf("%s 操作在 %s 数据库上不支持", op, dbType),
 		Timestamp: time.Now(),
-		TraceID:   utils.GetTraceID(),
+		TraceID:   logging.GetTraceID(ctx),
 	}
 }
 
+// HandleError 统一错误处理
 func HandleError(err error) {
 	if err == nil {
 		return
 	}
-	if be, ok := err.(*BackupError); ok {
-		utils.Errorf("[%s] %s: %s", be.Type, be.Op, be.Message)
+	var be *BackupError
+	if errors.As(err, &be) {
+		logging.Error("备份错误", "type", string(be.Type), "op", be.Op, "message", be.Message)
 		if be.Cause != nil {
-			utils.Debugf("错误原因: %v", be.Cause)
+			logging.Debug("错误原因", "error", be.Cause)
 		}
 	} else {
-		utils.Errorf("未知错误: %v", err)
+		logging.Error("未知错误", "error", err)
 	}
 }

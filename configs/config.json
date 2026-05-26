@@ -21,8 +21,12 @@
       "database": "",
       "ssl_mode": "",
       "extra": {
-        "MYSQL_BIN_PATH": "C:\\Program Files\\MySQL\\MySQL Server 8.0\\bin"
-      }
+        "MYSQL_BIN_PATH": "C:\\Program Files\\MySQL\\MySQL Server 8.0\\bin",
+        "XTRABACKUP_BIN_PATH": "",
+        "DATA_DIR": "",
+        "SERVICE_NAME": ""
+      },
+      "_extra_help": "MYSQL_BIN_PATH: MySQL客户端工具目录(可选); XTRABACKUP_BIN_PATH: XtraBackup工具目录,物理备份用(可选); DATA_DIR: 数据目录,物理备份还原用(可选); SERVICE_NAME: 系统服务名,物理备份还原用(可选)"
     },
     "oracle": {
       "type": "oracle",
@@ -35,7 +39,8 @@
       "extra": {
         "ORACLE_HOME": "c:\\windows.x64_193000_db_home",
         "ORACLE_SID": "ORCL"
-      }
+      },
+      "_extra_help": "ORACLE_HOME: Oracle安装目录(必填); ORACLE_SID: Oracle实例标识(必填)"
     },
     "mssql": {
       "type": "mssql",
@@ -46,8 +51,10 @@
       "database": "",
       "ssl_mode": "",
       "extra": {
+        "INSTANCE": "",
         "AUTH_TYPE": "windows"
-      }
+      },
+      "_extra_help": "INSTANCE: SQL Server命名实例名,默认实例留空(可选); AUTH_TYPE: 认证方式 windows/sql,默认sql(可选)"
     },
     "postgresql": {
       "type": "postgresql",
@@ -59,8 +66,10 @@
       "ssl_mode": "disable",
       "extra": {
         "PG_BIN_PATH": "C:\\Program Files\\PostgreSQL\\18\\bin",
-        "DATA_DIR": "C:\\Program Files\\PostgreSQL\\18\\data"
-      }
+        "DATA_DIR": "C:\\Program Files\\PostgreSQL\\18\\data",
+        "SERVICE_NAME": ""
+      },
+      "_extra_help": "PG_BIN_PATH: PostgreSQL客户端工具目录(可选); DATA_DIR: 数据目录,物理备份还原用(可选); SERVICE_NAME: 系统服务名,物理备份还原用(可选)"
     }
   }
 }

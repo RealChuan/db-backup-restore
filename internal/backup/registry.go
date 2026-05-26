@@ -1,21 +1,21 @@
 package backup
 
 import (
-	"context"
 	"errors"
+	"strings"
 	"sync"
 )
 
-// DriverMetadata 驱动元数据
+// DriverMetadata describes a backup driver
 type DriverMetadata struct {
-	Name                 string       // 驱动名称
-	Version              string       // 驱动版本
-	Description          string       // 驱动描述
-	SupportedActions     []string     // 支持的操作列表
-	SupportedBackupTypes []BackupType // 支持的备份类型
+	Name                 string
+	Version              string
+	Description          string
+	SupportedActions     []string
+	SupportedBackupTypes []BackupType
 }
 
-// DriverFactory 驱动工厂函数类型
+// DriverFactory creates a new backup driver instance
 type DriverFactory func(config *DBConfig) (DatabaseBackup, error)
 
 // driverInfo 注册表中存储的驱动信息
@@ -115,16 +115,6 @@ func NewBackup(config *DBConfig) (DatabaseBackup, error) {
 	return factory(config)
 }
 
-// NewBackupWithInit 创建数据库备份实例并执行初始化
-func NewBackupWithInit(ctx context.Context, config *DBConfig) (DatabaseBackup, error) {
-	db, err := NewBackup(config)
-	if err != nil {
-		return nil, err
-	}
-
-	return db, nil
-}
-
 // ValidateDriverConfig 验证驱动配置（不创建实例）
 func ValidateDriverConfig(config *DBConfig) error {
 	if config == nil {
@@ -146,12 +136,5 @@ func formatDriverList() string {
 	if len(drivers) == 0 {
 		return "无"
 	}
-	result := ""
-	for i, name := range drivers {
-		if i > 0 {
-			result += ", "
-		}
-		result += name
-	}
-	return result
+	return strings.Join(drivers, ", ")
 }

@@ -1,8 +1,9 @@
-package utils
+package fileutil
 
 import (
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -27,11 +28,6 @@ func AddExeExt(path string) string {
 		return path + ".exe"
 	}
 	return path
-}
-
-// Format 格式化字符串（与 fmt.Sprintf 功能相同）
-func Format(format string, args ...interface{}) string {
-	return fmt.Sprintf(format, args...)
 }
 
 // FormatFileSize 将字节大小转换为更可读的格式
@@ -75,7 +71,7 @@ func GetDirSize(path string) int64 {
 		return nil
 	})
 	if err != nil {
-		Warnf("计算目录大小失败: %v", err)
+		slog.Warn("计算目录大小失败", "error", err)
 	}
 	return size
 }
@@ -110,7 +106,7 @@ func CopyDir(srcDir, dstDir string) error {
 		}
 		defer dstFile.Close()
 
-		_, err = io.Copy(dstFile, srcFile)
+		_, err = io.CopyBuffer(dstFile, srcFile, make([]byte, 32*1024))
 		if err != nil {
 			return err
 		}
@@ -121,5 +117,5 @@ func CopyDir(srcDir, dstDir string) error {
 
 // EnsureDir 确保目录存在，不存在则创建
 func EnsureDir(path string) error {
-	return os.MkdirAll(path, 0755)
+	return os.MkdirAll(path, 0o755)
 }

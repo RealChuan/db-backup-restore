@@ -2,14 +2,11 @@ package main
 
 import (
 	"context"
-	"fmt"
-	"path/filepath"
-	"time"
 
 	"github.com/spf13/cobra"
 
-	"db-backup-restore/internal/backup"
-	"db-backup-restore/pkg/utils"
+	"github.com/RealChuan/db-backup-restore/internal/app"
+	"github.com/RealChuan/db-backup-restore/internal/app/notify"
 )
 
 var (
@@ -44,7 +41,7 @@ var backupCmd = &cobra.Command{
 
   # 启用压缩和并行备份
   db-backup-restore backup -c config.json -t postgresql --enable-compression --parallel-workers 4`,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, _ []string) error {
 		return runBackup(cmd.Context())
 	},
 }
@@ -58,55 +55,14 @@ func init() {
 }
 
 func runBackup(ctx context.Context) error {
-	utils.Info("=== 开始备份 ===")
-
-	backupModeVal, err := backup.ParseBackupMode(backupMode)
-	if err != nil {
-		utils.AuditLog("backup", databaseType, "failed", "无效的备份模式: "+backupMode)
-		return err
+	var notifier *notify.Notifier
+	if notifyWebhook != "" {
+		notifier = notify.NewNotifier(notifyWebhook)
 	}
-
-	backupTypeVal, err := backup.ParseBackupType(backupType)
-	if err != nil {
-		utils.AuditLog("backup", databaseType, "failed", "无效的备份类型: "+backupType)
-		return err
-	}
-
-	backupTargetPath := filepath.Join(appConfig.BaseBackupDir, databaseType, "backup")
-	archiveLogDest := filepath.Join(appConfig.BaseBackupDir, databaseType, "archivelog")
-
-	backupOpts := backup.BackupOptions{
-		Mode:              backupModeVal,
-		Type:              backupTypeVal,
+	return app.NewBackupApp(appConfig, notifier).Run(ctx, databaseType, app.BackupOptions{
+		Mode:              backupMode,
+		Type:              backupType,
 		ParallelWorkers:   parallelWorkers,
 		EnableCompression: enableCompression,
-		TargetPath:        backupTargetPath,
-		ArchiveLogDest:    archiveLogDest,
-		Timeout:           2 * time.Hour,
-	}
-
-	utils.Infof("备份模式: %s, 备份类型: %s", backupMode, backupType)
-
-	return withDatabaseBackup(ctx, "backup", func(ctx context.Context, db backup.DatabaseBackup) error {
-		result, err := db.Backup(ctx, backupOpts, func(percent float64, msg string) {
-			utils.Infof("备份进度: %.2f%% - %s", percent, msg)
-		})
-		if err != nil {
-			utils.AuditLog("backup", databaseType, "failed", err.Error())
-			return fmt.Errorf("备份失败: %w", err)
-		}
-
-		utils.Infof("备份成功: 文件=%s, 大小=%s, 耗时=%v",
-			result.BackupFile, utils.FormatFileSize(result.BackupSize), result.Duration)
-
-		if result.Metadata["backup_set_key"] != "" {
-			utils.Infof("备份集ID: %s", result.Metadata["backup_set_key"])
-		}
-
-		utils.AuditLog("backup", databaseType, "success",
-			fmt.Sprintf("backup_type=%s, backup_mode=%s, file=%s, size=%d, duration=%v",
-				backupType, backupMode, result.BackupFile, result.BackupSize, result.Duration))
-
-		return nil
 	})
 }

@@ -80,11 +80,8 @@ echo "Checking Go version..."
 go version
 
 # Download dependencies
-echo "Updating all dependencies..."
-go get -u ./...
-
 echo "Downloading dependencies..."
-go mod tidy
+go mod download
 
 # Build for each platform-architecture combination
 for combo in "${SELECTED_PLATFORMS[@]}"; do

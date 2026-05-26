@@ -68,11 +68,8 @@ Write-Host "Checking Go version..."
 go version
 
 # Download dependencies
-Write-Host "Updating all dependencies..."
-go get -u ./...
-
 Write-Host "Downloading dependencies..."
-go mod tidy
+go mod download
 
 # Build for each platform-architecture combination
 foreach ($Combo in $SelectedPlatforms) {

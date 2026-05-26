@@ -28,8 +28,20 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.0"
+          go-version: "1.26.3"
           check-latest: true
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v9
+
+      - name: Vulnerability check
+        run: go tool govulncheck ./...
+
+      - name: Run tests
+        run: go test -race -coverprofile=coverage.out ./...
+
+      - name: Check coverage
+        run: go tool cover -func=coverage.out
 
       - name: Build project
         shell: bash

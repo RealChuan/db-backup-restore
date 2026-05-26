@@ -1,6 +1,6 @@
 //go:build windows
 
-package utils
+package fileutil
 
 import (
 	"syscall"
@@ -21,7 +21,7 @@ func checkAdmin() bool {
 	if err != nil {
 		return false
 	}
-	defer syscall.CloseHandle(syscall.Handle(hToken))
+	defer syscall.CloseHandle(syscall.Handle(hToken)) //nolint:errcheck
 
 	var tokenInfo struct {
 		TokenIsAdmin uint32
