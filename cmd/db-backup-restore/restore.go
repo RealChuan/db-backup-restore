@@ -50,10 +50,11 @@ func runRestore(ctx context.Context) error {
 	if notifyWebhook != "" {
 		notifier = notify.NewNotifier(notifyWebhook)
 	}
-	return app.NewRestoreApp(appConfig, notifier).Run(ctx, databaseType, app.RestoreOptions{
+	result, err := app.NewRestoreApp(appConfig, notifier).Run(ctx, databaseType, app.RestoreOptions{
 		BackupIdentifier:    backupIdentifier,
 		TargetDatabaseName:  targetDatabaseName,
 		Type:                backupType,
 		RecoveryPointInTime: recoveryPointInTime,
 	})
+	return outputResult(result, err, "restore")
 }

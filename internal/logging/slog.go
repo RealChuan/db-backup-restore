@@ -735,5 +735,5 @@ func LogCommand(cmd, output string, isError bool) {
 
 // LogCommandInfo logs the start of a command execution.
 func LogCommandInfo(cmd string) {
-	logAt(context.Background(), slog.LevelInfo, 2, fmt.Sprintf("[命令执行] %s", cmd))
+	logAt(context.Background(), slog.LevelDebug, 2, fmt.Sprintf("[命令执行] %s", cmd))
 }

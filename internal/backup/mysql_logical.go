@@ -113,7 +113,7 @@ func (m *MySQLBackup) backupMultipleDatabasesLogical(ctx context.Context, backup
 
 // backupAllDatabasesLogical 逻辑备份所有数据库
 func (m *MySQLBackup) backupAllDatabasesLogical(ctx context.Context, backupDir string, callback ProgressCallback) (*BackupResult, error) {
-	databases, err := m.getAllDatabases(ctx)
+	databases, err := m.ListDatabases(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("获取数据库列表失败: %w", err)
 	}
@@ -183,8 +183,8 @@ func (m *MySQLBackup) restoreLogical(ctx context.Context, opts RestoreOptions, c
 	return result, nil
 }
 
-// getAllDatabases 获取所有数据库（排除系统数据库）
-func (m *MySQLBackup) getAllDatabases(ctx context.Context) ([]string, error) {
+// ListDatabases 获取所有数据库（排除系统数据库）。
+func (m *MySQLBackup) ListDatabases(ctx context.Context) ([]string, error) {
 	output, err := m.execSQL(ctx, "SHOW DATABASES")
 	if err != nil {
 		return nil, fmt.Errorf("获取数据库列表失败: %w", err)
@@ -200,8 +200,6 @@ func (m *MySQLBackup) getAllDatabases(ctx context.Context) ([]string, error) {
 		if line == "information_schema" || line == DBTypeMySQL || line == "performance_schema" || line == "sys" {
 			continue
 		}
-		logging.InfoCtx(ctx, "发现数据库", "name", line)
-
 		databases = append(databases, line)
 	}
 

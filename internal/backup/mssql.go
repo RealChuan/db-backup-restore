@@ -241,7 +241,7 @@ func (m *MSSQLBackup) backupMultipleDatabases(ctx context.Context, opts BackupOp
 
 // backupAllDatabases 备份所有用户数据库
 func (m *MSSQLBackup) backupAllDatabases(ctx context.Context, opts BackupOptions, backupDir string, callback ProgressCallback) (*BackupResult, error) {
-	databases, err := m.getAllUserDatabases(ctx)
+	databases, err := m.ListDatabases(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("获取数据库列表失败: %w", err)
 	}
@@ -254,8 +254,8 @@ func (m *MSSQLBackup) backupAllDatabases(ctx context.Context, opts BackupOptions
 	return m.backupMultipleDatabases(ctx, opts, backupDir, databases, callback)
 }
 
-// getAllUserDatabases 获取所有用户数据库（排除系统数据库）
-func (m *MSSQLBackup) getAllUserDatabases(ctx context.Context) ([]string, error) {
+// ListDatabases 获取所有用户数据库（排除系统数据库）。
+func (m *MSSQLBackup) ListDatabases(ctx context.Context) ([]string, error) {
 	sqlScript := `
 SELECT name 
 FROM sys.databases 

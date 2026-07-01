@@ -2,14 +2,13 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
-	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/RealChuan/db-backup-restore/internal/app"
 	"github.com/RealChuan/db-backup-restore/internal/backup"
-	"github.com/RealChuan/db-backup-restore/internal/logging"
 )
 
 var listDriversCmd = &cobra.Command{
@@ -44,6 +43,24 @@ var listCmd = &cobra.Command{
   db-backup-restore list -c config.json -t postgresql`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		return runListBackups(cmd.Context())
+	},
+}
+
+var listDatabasesCmd = &cobra.Command{
+	Use:   "list-databases",
+	Short: "列出所有用户数据库",
+	Long: `列出指定数据库类型下的所有用户数据库（排除系统数据库）。
+
+注意: Oracle 数据库基于实例架构，不支持此操作。
+
+使用示例:
+  # 列出 MySQL 的所有用户数据库（text 格式）
+  db-backup-restore list-databases -c config.json -t mysql
+
+  # 以 JSON 格式输出（建议在配置文件中设置 log.level=error 以保证输出为纯 JSON）
+  db-backup-restore list-databases -c config.json -t postgresql --output json`,
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		return runListDatabases(cmd.Context())
 	},
 }
 
@@ -196,6 +213,7 @@ func init() {
 
 	rootCmd.AddCommand(listDriversCmd)
 	rootCmd.AddCommand(listCmd)
+	rootCmd.AddCommand(listDatabasesCmd)
 	rootCmd.AddCommand(deleteCmd)
 	rootCmd.AddCommand(validateCmd)
 	rootCmd.AddCommand(infoCmd)
@@ -207,61 +225,82 @@ func init() {
 }
 
 func runListDrivers() error {
-	logging.Info("=== 支持的数据库驱动 ===")
-
 	drivers := backup.ListDriverMetadata()
-	if len(drivers) == 0 {
-		logging.Info("未注册任何数据库驱动")
-		return nil
-	}
 
+	items := make([]interface{}, 0, len(drivers))
 	for _, driver := range drivers {
-		logging.Info("驱动名称", "name", driver.Name)
-		logging.Info("驱动版本", "version", driver.Version)
-		logging.Info("驱动描述", "description", driver.Description)
-		logging.Info("支持的操作", "actions", strings.Join(driver.SupportedActions, ", "))
-		backupTypes := make([]string, 0, len(driver.SupportedBackupTypes))
+		backupTypes := make([]interface{}, 0, len(driver.SupportedBackupTypes))
 		for _, bt := range driver.SupportedBackupTypes {
 			backupTypes = append(backupTypes, string(bt))
 		}
-		logging.Info("支持的备份类型", "types", strings.Join(backupTypes, ", "))
+		actions := make([]interface{}, 0, len(driver.SupportedActions))
+		for _, a := range driver.SupportedActions {
+			actions = append(actions, a)
+		}
+		items = append(items, map[string]interface{}{
+			"name":                   driver.Name,
+			"version":                driver.Version,
+			"description":            driver.Description,
+			"supported_actions":      actions,
+			"supported_backup_types": backupTypes,
+		})
 	}
 
-	return nil
+	result := &app.OperationResult{
+		Success:   true,
+		Operation: "list_drivers",
+		Message:   fmt.Sprintf("共 %d 个驱动", len(drivers)),
+		Data:      map[string]interface{}{"drivers": items},
+	}
+	return app.NewOutputWriter(currentFormat()).Write(result)
 }
 
 func runListBackups(ctx context.Context) error {
-	return app.NewManagerApp(appConfig).ListBackups(ctx, databaseType)
+	result, err := app.NewManagerApp(appConfig).ListBackups(ctx, databaseType)
+	return outputResult(result, err, "list")
+}
+
+func runListDatabases(ctx context.Context) error {
+	result, err := app.NewManagerApp(appConfig).ListDatabases(ctx, databaseType)
+	return outputResult(result, err, "list_databases")
 }
 
 func runDeleteBackup(ctx context.Context) error {
-	return app.NewManagerApp(appConfig).DeleteBackup(ctx, databaseType, deleteIdentifier)
+	result, err := app.NewManagerApp(appConfig).DeleteBackup(ctx, databaseType, deleteIdentifier)
+	return outputResult(result, err, "delete")
 }
 
 func runValidateBackup(ctx context.Context) error {
-	return app.NewManagerApp(appConfig).ValidateBackup(ctx, databaseType, validateID, backupType)
+	result, err := app.NewManagerApp(appConfig).ValidateBackup(ctx, databaseType, validateID, backupType)
+	return outputResult(result, err, "validate")
 }
 
 func runGetBackupInfo(ctx context.Context) error {
-	return app.NewManagerApp(appConfig).GetBackupInfo(ctx, databaseType, infoID)
+	result, err := app.NewManagerApp(appConfig).GetBackupInfo(ctx, databaseType, infoID)
+	return outputResult(result, err, "info")
 }
 
 func runRegisterBackup(ctx context.Context) error {
-	return app.NewManagerApp(appConfig).RegisterBackup(ctx, databaseType, registerPath)
+	result, err := app.NewManagerApp(appConfig).RegisterBackup(ctx, databaseType, registerPath)
+	return outputResult(result, err, "register")
 }
 
 func runUnregisterBackup(ctx context.Context) error {
-	return app.NewManagerApp(appConfig).UnregisterBackup(ctx, databaseType, unregisterID)
+	result, err := app.NewManagerApp(appConfig).UnregisterBackup(ctx, databaseType, unregisterID)
+	return outputResult(result, err, "unregister")
 }
 
 func runVerifyBackupStatus(ctx context.Context) error {
-	return app.NewManagerApp(appConfig).VerifyBackupStatus(ctx, databaseType)
+	result, err := app.NewManagerApp(appConfig).VerifyBackupStatus(ctx, databaseType)
+	return outputResult(result, err, "verify_status")
 }
 
 func runDeleteInvalidBackups(ctx context.Context) error {
-	return app.NewManagerApp(appConfig).DeleteInvalidBackups(ctx, databaseType)
+	result, err := app.NewManagerApp(appConfig).DeleteInvalidBackups(ctx, databaseType)
+	return outputResult(result, err, "delete_invalid")
 }
 
 func runDeleteAllBackups(ctx context.Context) error {
-	return app.NewManagerApp(appConfig).DeleteAllBackups(ctx, databaseType)
+	result, err := app.NewManagerApp(appConfig).DeleteAllBackups(ctx, databaseType)
+	return outputResult(result, err, "delete_all")
 }

@@ -54,6 +54,11 @@ type Closer interface {
 	Close() error
 }
 
+// DatabaseLister 数据库列表查询接口
+type DatabaseLister interface {
+	ListDatabases(ctx context.Context) ([]string, error)
+}
+
 // DatabaseBackup 完整的数据库备份管理接口
 type DatabaseBackup interface {
 	Backuper
@@ -65,5 +70,6 @@ type DatabaseBackup interface {
 	BackupRegistry
 	BackupStatusVerifier
 	AllBackupDeleter
+	DatabaseLister
 	Closer
 }

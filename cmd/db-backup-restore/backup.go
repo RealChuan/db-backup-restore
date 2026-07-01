@@ -59,10 +59,11 @@ func runBackup(ctx context.Context) error {
 	if notifyWebhook != "" {
 		notifier = notify.NewNotifier(notifyWebhook)
 	}
-	return app.NewBackupApp(appConfig, notifier).Run(ctx, databaseType, app.BackupOptions{
+	result, err := app.NewBackupApp(appConfig, notifier).Run(ctx, databaseType, app.BackupOptions{
 		Mode:              backupMode,
 		Type:              backupType,
 		ParallelWorkers:   parallelWorkers,
 		EnableCompression: enableCompression,
 	})
+	return outputResult(result, err, "backup")
 }

@@ -32,19 +32,19 @@ func NewBackupApp(cfg *config.Config, notifier *notify.Notifier) *BackupApp {
 }
 
 // Run 执行备份操作。
-func (a *BackupApp) Run(ctx context.Context, dbType string, opts BackupOptions) error {
-	logging.Info("=== 开始备份 ===")
+func (a *BackupApp) Run(ctx context.Context, dbType string, opts BackupOptions) (*OperationResult, error) {
+	logging.Debug("=== 开始备份 ===")
 
 	backupModeVal, err := backup.ParseBackupMode(opts.Mode)
 	if err != nil {
-		logging.AuditLog("backup", dbType, "failed", "无效的备份模式: "+opts.Mode)
-		return err
+		logging.AuditLog(OpBackup, dbType, "failed", "无效的备份模式: "+opts.Mode)
+		return nil, err
 	}
 
 	backupTypeVal, err := backup.ParseBackupType(opts.Type)
 	if err != nil {
-		logging.AuditLog("backup", dbType, "failed", "无效的备份类型: "+opts.Type)
-		return err
+		logging.AuditLog(OpBackup, dbType, "failed", "无效的备份类型: "+opts.Type)
+		return nil, err
 	}
 
 	backupTargetPath := filepath.Join(a.cfg.BaseBackupDir, dbType, "backup")
@@ -60,30 +60,46 @@ func (a *BackupApp) Run(ctx context.Context, dbType string, opts BackupOptions) 
 		Timeout:           2 * time.Hour,
 	}
 
-	logging.InfoCtx(ctx, "备份模式与类型", "mode", opts.Mode, "type", opts.Type)
+	logging.DebugCtx(ctx, "备份模式与类型", "mode", opts.Mode, "type", opts.Type)
 
-	return withDatabaseBackup(ctx, a.cfg, "backup", dbType, func(ctx context.Context, db backup.DatabaseBackup) error {
-		result, err := db.Backup(ctx, backupOpts, func(percent float64, msg string) {
-			logging.InfoCtx(ctx, "备份进度", "percent", fmt.Sprintf("%.2f", percent), "msg", msg)
+	var result *backup.BackupResult
+	err = withDatabaseBackup(ctx, a.cfg, OpBackup, dbType, func(ctx context.Context, db backup.DatabaseBackup) error {
+		var err error
+		result, err = db.Backup(ctx, backupOpts, func(percent float64, msg string) {
+			logging.DebugCtx(ctx, "备份进度", "percent", fmt.Sprintf("%.2f", percent), "msg", msg)
 		})
 		if err != nil {
-			logging.AuditLog("backup", dbType, "failed", err.Error())
-			a.notify(ctx, "backup", dbType, "failed", err.Error())
+			logging.AuditLog(OpBackup, dbType, "failed", err.Error())
+			a.notify(ctx, OpBackup, dbType, "failed", err.Error())
 			return fmt.Errorf("备份失败: %w", err)
 		}
 
-		logging.InfoCtx(ctx, "备份成功", "file", result.BackupFile, "size", FormatFileSize(result.BackupSize), "duration", result.Duration)
-
-		if result.Metadata["backup_set_key"] != "" {
-			logging.InfoCtx(ctx, "备份集ID", "backup_set_key", result.Metadata["backup_set_key"])
-		}
-
-		logging.AuditLog("backup", dbType, "success",
+		logging.AuditLog(OpBackup, dbType, "success",
 			fmt.Sprintf("backup_type=%s, backup_mode=%s, file=%s, size=%d, duration=%v",
 				opts.Type, opts.Mode, result.BackupFile, result.BackupSize, result.Duration))
 
 		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+
+	data := map[string]interface{}{
+		DataKeyFile:     result.BackupFile,
+		DataKeySize:     FormatFileSize(result.BackupSize),
+		DataKeyDuration: result.Duration.String(),
+	}
+	if result.Metadata["backup_set_key"] != "" {
+		data[DataKeyBackupSetKey] = result.Metadata["backup_set_key"]
+	}
+
+	return &OperationResult{
+		Success:   true,
+		Operation: OpBackup,
+		DBType:    dbType,
+		Message:   "备份成功",
+		Data:      data,
+	}, nil
 }
 
 // notify 发送通知，如果 notifier 为 nil 则忽略

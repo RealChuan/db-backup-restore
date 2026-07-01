@@ -55,6 +55,11 @@ func (b *BaseBackup) ValidateBackup(ctx context.Context, _ string, _ ...BackupOp
 	return NewNotSupportedError(ctx, "ValidateBackup", b.config.Type)
 }
 
+// ListDatabases 默认实现：大多数数据库不支持列出所有数据库（如 Oracle 基于实例架构）。
+func (b *BaseBackup) ListDatabases(ctx context.Context) ([]string, error) {
+	return nil, NewNotSupportedError(ctx, "ListDatabases", b.config.Type)
+}
+
 // parseDatabaseNames 解析数据库名称（支持逗号分隔的多个数据库）
 func (b *BaseBackup) parseDatabaseNames(databaseName string) []string {
 	if databaseName == "" || databaseName == "all" {

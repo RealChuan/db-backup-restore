@@ -209,7 +209,7 @@ func (p *PostgreSQLBackup) backupMultipleDatabasesLogical(ctx context.Context, b
 
 // backupAllDatabasesLogical 逻辑备份所有数据库
 func (p *PostgreSQLBackup) backupAllDatabasesLogical(ctx context.Context, backupDir string, callback ProgressCallback) (*BackupResult, error) {
-	databases, err := p.getAllDatabases(ctx)
+	databases, err := p.ListDatabases(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("获取数据库列表失败: %w", err)
 	}
@@ -285,8 +285,8 @@ func (p *PostgreSQLBackup) restoreLogical(ctx context.Context, opts RestoreOptio
 	return result, nil
 }
 
-// getAllDatabases 获取所有数据库（排除系统数据库）
-func (p *PostgreSQLBackup) getAllDatabases(ctx context.Context) ([]string, error) {
+// ListDatabases 获取所有数据库（排除系统数据库）。
+func (p *PostgreSQLBackup) ListDatabases(ctx context.Context) ([]string, error) {
 	output, err := p.execSQL(ctx, "SELECT datname FROM pg_database WHERE datistemplate = false;")
 	if err != nil {
 		return nil, fmt.Errorf("获取数据库列表失败: %w", err)
@@ -311,8 +311,6 @@ func (p *PostgreSQLBackup) getAllDatabases(ctx context.Context) ([]string, error
 		if strings.HasPrefix(line, "(") && strings.HasSuffix(line, ")") {
 			continue
 		}
-		logging.InfoCtx(ctx, "发现数据库", "name", line)
-
 		databases = append(databases, line)
 	}
 

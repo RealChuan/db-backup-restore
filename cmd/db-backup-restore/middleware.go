@@ -11,15 +11,15 @@ func WrapCommand(cmd *cobra.Command) {
 	if cmd.RunE != nil {
 		originalRunE := cmd.RunE
 		cmd.RunE = func(cmd *cobra.Command, args []string) error {
-			logging.Info("开始执行命令", "cmd", cmd.Name())
+			logging.Debug("开始执行命令", "cmd", cmd.Name())
 
 			err := originalRunE(cmd, args)
 			if err != nil {
-				logging.Error("命令执行失败", "cmd", cmd.Name(), "error", err)
+				logging.Debug("命令执行失败", "cmd", cmd.Name(), "error", err)
 				return err
 			}
 
-			logging.Info("命令执行成功", "cmd", cmd.Name())
+			logging.Debug("命令执行成功", "cmd", cmd.Name())
 			return nil
 		}
 	}

@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os"
 	"sync"
 
 	"github.com/spf13/cobra"
@@ -85,12 +86,19 @@ var rootCmd = &cobra.Command{
 }
 
 func Execute() {
+	rootCmd.SilenceErrors = true
+	rootCmd.SilenceUsage = true
 	SetupCommandErrorHandling(rootCmd)
 
-	err := rootCmd.Execute()
-	if err != nil {
-		backup.HandleError(err)
-		logging.Fatal(fmt.Sprintf("%v", err))
+	if err := rootCmd.Execute(); err != nil {
+		// PersistentPreRunE 错误（如缺少 -c）在 RunE 之前发生，
+		// outputResult 未被调用，需在此兜底输出。
+		writer := app.NewOutputWriter(currentFormat())
+		_ = writer.Write(&app.OperationResult{
+			Success: false,
+			Error:   err.Error(),
+		})
+		os.Exit(1)
 	}
 }
 
@@ -104,7 +112,8 @@ func runValidateConfig() error {
 		return fmt.Errorf("配置文件加载失败: %w", err)
 	}
 
-	return app.NewManagerApp(cfg).ValidateConfig(configFilePath)
+	result, err := app.NewManagerApp(cfg).ValidateConfig(configFilePath)
+	return outputResult(result, err, "validate_config")
 }
 
 func init() {
@@ -115,4 +124,29 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&notifyWebhook, "notify", "", "操作失败时发送 webhook 通知的 URL")
 
 	rootCmd.AddCommand(validateConfigCmd)
+}
+
+// currentFormat 解析当前 --output 标志为 OutputFormat。
+func currentFormat() backup.OutputFormat {
+	f, _ := backup.ParseOutputFormat(outputFormat)
+	return f
+}
+
+// outputResult 统一渲染命令结果。成功时写入 result，失败时写入错误 result。
+// 返回 error 供 cobra 设置退出码。
+func outputResult(result *app.OperationResult, err error, operation string) error {
+	writer := app.NewOutputWriter(currentFormat())
+	if err != nil {
+		_ = writer.Write(&app.OperationResult{
+			Success:   false,
+			Operation: operation,
+			DBType:    databaseType,
+			Error:     err.Error(),
+		})
+		return err
+	}
+	if result != nil {
+		return writer.Write(result)
+	}
+	return nil
 }

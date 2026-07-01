@@ -31,21 +31,21 @@ func NewRestoreApp(cfg *config.Config, notifier *notify.Notifier) *RestoreApp {
 }
 
 // Run 执行还原操作。
-func (a *RestoreApp) Run(ctx context.Context, dbType string, opts RestoreOptions) error {
-	logging.Info("=== 开始还原 ===")
+func (a *RestoreApp) Run(ctx context.Context, dbType string, opts RestoreOptions) (*OperationResult, error) {
+	logging.Debug("=== 开始还原 ===")
 
 	if opts.BackupIdentifier == "" && opts.RecoveryPointInTime == "" {
-		return fmt.Errorf("必须指定 BackupIdentifier 或 RecoveryPointInTime 参数")
+		return nil, fmt.Errorf("必须指定 BackupIdentifier 或 RecoveryPointInTime 参数")
 	}
 
 	if opts.BackupIdentifier == "" && dbType != "oracle" && opts.RecoveryPointInTime != "" {
-		return fmt.Errorf("时间点恢复仅支持 Oracle 数据库")
+		return nil, fmt.Errorf("时间点恢复仅支持 Oracle 数据库")
 	}
 
 	backupTypeVal, err := backup.ParseBackupType(opts.Type)
 	if err != nil {
-		logging.AuditLog("restore", dbType, "failed", "无效的备份类型: "+opts.Type)
-		return err
+		logging.AuditLog(OpRestore, dbType, "failed", "无效的备份类型: "+opts.Type)
+		return nil, err
 	}
 
 	restoreOpts := backup.RestoreOptions{
@@ -58,34 +58,51 @@ func (a *RestoreApp) Run(ctx context.Context, dbType string, opts RestoreOptions
 	if opts.RecoveryPointInTime != "" {
 		pointInTimeVal, err := parseTime(opts.RecoveryPointInTime)
 		if err != nil {
-			logging.AuditLog("restore", dbType, "failed", "无效的时间格式: "+opts.RecoveryPointInTime)
-			return fmt.Errorf("无效的时间格式: %w", err)
+			logging.AuditLog(OpRestore, dbType, "failed", "无效的时间格式: "+opts.RecoveryPointInTime)
+			return nil, fmt.Errorf("无效的时间格式: %w", err)
 		}
 		restoreOpts.RecoveryPointInTime = pointInTimeVal
 	}
 
-	return withDatabaseBackup(ctx, a.cfg, "restore", dbType, func(ctx context.Context, db backup.DatabaseBackup) error {
-		result, err := db.Restore(ctx, restoreOpts, func(percent float64, msg string) {
-			logging.InfoCtx(ctx, "还原进度", "percent", fmt.Sprintf("%.2f", percent), "msg", msg)
+	var result *backup.RestoreResult
+	err = withDatabaseBackup(ctx, a.cfg, OpRestore, dbType, func(ctx context.Context, db backup.DatabaseBackup) error {
+		var err error
+		result, err = db.Restore(ctx, restoreOpts, func(percent float64, msg string) {
+			logging.DebugCtx(ctx, "还原进度", "percent", fmt.Sprintf("%.2f", percent), "msg", msg)
 		})
 		if err != nil {
-			logging.AuditLog("restore", dbType, "failed", err.Error())
-			a.notify(ctx, "restore", dbType, "failed", err.Error())
+			logging.AuditLog(OpRestore, dbType, "failed", err.Error())
+			a.notify(ctx, OpRestore, dbType, "failed", err.Error())
 			return fmt.Errorf("还原失败: %w", err)
 		}
 
-		logging.InfoCtx(ctx, "还原成功", "duration", result.Duration)
-
-		if result.RestoredToSCN != "" {
-			logging.InfoCtx(ctx, "恢复到SCN", "scn", result.RestoredToSCN)
-		}
-
-		logging.AuditLog("restore", dbType, "success",
+		logging.AuditLog(OpRestore, dbType, "success",
 			fmt.Sprintf("backup_tag=%s, target_db=%s, duration=%v, scn=%s",
 				opts.BackupIdentifier, opts.TargetDatabaseName, result.Duration, result.RestoredToSCN))
 
 		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+
+	data := map[string]interface{}{
+		DataKeyDuration: result.Duration.String(),
+	}
+	if result.TargetDatabase != "" {
+		data[DataKeyTargetDB] = result.TargetDatabase
+	}
+	if result.RestoredToSCN != "" {
+		data[DataKeySCN] = result.RestoredToSCN
+	}
+
+	return &OperationResult{
+		Success:   true,
+		Operation: OpRestore,
+		DBType:    dbType,
+		Message:   "还原成功",
+		Data:      data,
+	}, nil
 }
 
 // notify 发送通知，如果 notifier 为 nil 则忽略
