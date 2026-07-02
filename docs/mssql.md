@@ -1,75 +1,26 @@
-# SQL Server 数据库备份与还原命令手册
+# SQL Server 命令参考
 
-本文档基于 `backup` 包中的 `MSSQLBackup` 实现，汇总了备份、还原、备份管理及恢复操作的底层 **sqlcmd** 和 **T-SQL** 命令。这些命令可直接在数据库服务器上执行，也可通过 Go 程序调用。
-
----
-
-## 📋 目录
-
-- [SQL Server 数据库备份与还原命令手册](#sql-server-数据库备份与还原命令手册)
-  - [📋 目录](#-目录)
-  - [1. 备份命令](#1-备份命令)
-    - [1.1 全量备份](#11-全量备份)
-    - [1.2 差异备份](#12-差异备份)
-    - [1.3 事务日志备份](#13-事务日志备份)
-  - [2. 还原命令](#2-还原命令)
-    - [2.1 还原到最新完整备份（默认）](#21-还原到最新完整备份默认)
-    - [2.2 按时间点还原（Point-in-Time）](#22-按时间点还原point-in-time)
-    - [2.3 还原到新数据库](#23-还原到新数据库)
-    - [2.4 差异备份还原](#24-差异备份还原)
-    - [2.5 事务日志还原](#25-事务日志还原)
-  - [3. 备份管理命令](#3-备份管理命令)
-    - [3.1 列出所有备份](#31-列出所有备份)
-    - [3.2 查看备份详细信息](#32-查看备份详细信息)
-    - [3.3 删除指定备份记录](#33-删除指定备份记录)
-    - [3.4 删除早于指定时间的备份](#34-删除早于指定时间的备份)
-    - [3.5 验证备份有效性](#35-验证备份有效性)
-    - [3.6 从备份文件获取数据库信息](#36-从备份文件获取数据库信息)
-    - [3.7 注册备份到目录库](#37-注册备份到目录库)
-    - [3.8 从目录库移除备份记录](#38-从目录库移除备份记录)
-    - [3.9 检查备份状态并更新](#39-检查备份状态并更新)
-    - [3.10 删除无效的备份记录](#310-删除无效的备份记录)
-    - [3.11 删除所有备份记录](#311-删除所有备份记录)
-  - [4. Go 代码与底层命令映射](#4-go-代码与底层命令映射)
-  - [5. 常用辅助查询](#5-常用辅助查询)
-    - [5.1 检查数据库恢复模式](#51-检查数据库恢复模式)
-    - [5.2 查看数据库文件位置](#52-查看数据库文件位置)
-    - [5.3 查看最近的备份历史](#53-查看最近的备份历史)
-    - [5.4 检查备份文件是否存在](#54-检查备份文件是否存在)
-    - [5.5 获取数据库列表（排除系统数据库）](#55-获取数据库列表排除系统数据库)
-  - [6. 典型故障处理](#6-典型故障处理)
-    - [6.1 还原时提示数据库正在使用](#61-还原时提示数据库正在使用)
-    - [6.2 备份文件损坏或无效](#62-备份文件损坏或无效)
-    - [6.3 事务日志已满](#63-事务日志已满)
-    - [6.4 数据库处于可疑状态](#64-数据库处于可疑状态)
-  - [7. 异机恢复指南](#7-异机恢复指南)
-    - [7.1 前提条件](#71-前提条件)
-    - [7.2 恢复步骤](#72-恢复步骤)
-    - [7.3 命令示例](#73-命令示例)
-    - [7.4 注意事项](#74-注意事项)
-  - [🔗 官方文档](#-官方文档)
+> 详细的 API 说明和各数据库对比请参阅 [API 参考](./api.md)。
 
 ---
 
-## 1. 备份命令
+## 备份（Backup）
 
-### 1.1 全量备份
+### 全量备份
 
 ```sql
 BACKUP DATABASE [YourDatabaseName] TO DISK = N'C:\backup\YourDatabaseName_20260415_150405.bak' WITH STATS = 10;
 ```
 
-> **说明**：当 `BackupOptions.EnableCompression` 为 `true` 时，会在 `WITH` 子句中追加 `COMPRESSION`。
+> **说明**：启用压缩时，在 `WITH` 子句中追加 `COMPRESSION`。
 
-### 1.2 差异备份
-
-> **说明**：当前代码实现仅支持全量备份，差异备份和事务日志备份需手动执行。
+### 差异备份
 
 ```sql
 BACKUP DATABASE [YourDatabaseName] TO DISK = N'C:\backup\YourDatabaseName_diff_20260415_150405.bak' WITH DIFFERENTIAL, COMPRESSION, STATS = 10;
 ```
 
-### 1.3 事务日志备份
+### 事务日志备份
 
 ```sql
 BACKUP LOG [YourDatabaseName] TO DISK = N'C:\backup\YourDatabaseName_log_20260415_150405.trn' WITH COMPRESSION, STATS = 10;
@@ -77,14 +28,12 @@ BACKUP LOG [YourDatabaseName] TO DISK = N'C:\backup\YourDatabaseName_log_2026041
 
 ---
 
-## 2. 还原命令
+## 还原（Restore）
 
-> **🔄 还原注意事项**
->
 > 还原操作会覆盖现有的数据库文件，请在执行还原前确保已备份重要数据。
 > 还原过程中数据库将不可用，建议在维护窗口内执行。
 
-### 2.1 还原到最新完整备份（默认）
+### 还原到最新完整备份
 
 ```sql
 USE master;
@@ -93,13 +42,11 @@ FROM DISK = N'C:\backup\YourDatabaseName_20260415_150405.bak'
 WITH STATS = 10;
 ```
 
-> **说明**：当 `RestoreOptions.Overwrite` 为 `true` 时，会在 `WITH` 子句中追加 `REPLACE`。
+> **说明**：覆盖模式下，在 `WITH` 子句中追加 `REPLACE`。
 
-### 2.2 按时间点还原（Point-in-Time）
+### 按时间点还原（Point-in-Time）
 
-> **⚠️ 重要注意事项 ⚠️**
->
-> 只有按照时间点还原（Point-in-Time），才可以完全还原到指定数据库状态，确保所有数据表数据的一致性。
+> 只有按时间点还原，才可以完全还原到指定数据库状态，确保所有数据表数据的一致性。
 
 ```sql
 USE master;
@@ -108,9 +55,9 @@ FROM DISK = N'C:\backup\YourDatabaseName_20260415_150405.bak'
 WITH STOPAT = '2026-04-15 15:30:00', STATS = 10;
 ```
 
-> **说明**：当 `RestoreOptions.Overwrite` 为 `true` 时，会在 `WITH` 子句中追加 `REPLACE`。
+> **说明**：覆盖模式下，在 `WITH` 子句中追加 `REPLACE`。
 
-### 2.3 还原到新数据库
+### 还原到新数据库
 
 ```sql
 USE master;
@@ -122,7 +69,7 @@ MOVE 'YourDatabaseName_Log' TO 'C:\data\YourDatabaseName_New.ldf',
 STATS = 10;
 ```
 
-### 2.4 差异备份还原
+### 差异备份还原
 
 ```sql
 USE master;
@@ -135,7 +82,7 @@ FROM DISK = N'C:\backup\YourDatabaseName_diff.bak'
 WITH RECOVERY, STATS = 10;
 ```
 
-### 2.5 事务日志还原
+### 事务日志还原
 
 ```sql
 USE master;
@@ -154,13 +101,21 @@ WITH RECOVERY, STATS = 10;
 
 ---
 
-## 3. 备份管理命令
+## 列出数据库（ListDatabases）
 
-> **📊 备份管理指南**
->
-> 定期管理备份文件可以确保备份的有效性和可用性，同时避免磁盘空间浪费。
+```sql
+SELECT name
+FROM sys.databases
+WHERE name NOT IN ('master', 'tempdb', 'model', 'msdb')
+  AND state = 0
+ORDER BY name;
+```
 
-### 3.1 列出所有备份
+---
+
+## 备份管理
+
+### 列出备份（ListBackups）
 
 ```sql
 SELECT
@@ -183,13 +138,19 @@ JOIN msdb.dbo.backupmediafamily bmf ON bs.media_set_id = bmf.media_set_id
 ORDER BY bs.backup_finish_date DESC;
 ```
 
-### 3.2 查看备份详细信息
+### 获取备份详情（GetBackupInfo）
+
+按备份 ID 查询：
 
 ```sql
 SELECT * FROM msdb.dbo.backupset WHERE backup_set_id = 123;
 ```
 
-### 3.3 删除指定备份记录
+> 不指定 ID 时，返回最近 10 条备份记录。
+
+### 删除备份（DeleteBackup）
+
+按备份 ID 删除（同时删除相关表记录和物理备份文件）：
 
 ```sql
 DECLARE @bsid INT = 123;
@@ -205,25 +166,29 @@ DELETE FROM msdb.dbo.backupfile WHERE backup_set_id = @bsid;
 DELETE FROM msdb.dbo.backupset WHERE backup_set_id = @bsid;
 ```
 
-### 3.4 删除早于指定时间的备份
+### 删除早于指定时间的备份
 
 ```sql
 EXEC msdb.dbo.sp_delete_backuphistory @oldest_date = '2026-04-01 00:00:00';
 ```
 
-### 3.5 验证备份有效性
+> 执行后同时删除对应的物理备份文件。
+
+### 验证备份（ValidateBackup）
 
 ```sql
 RESTORE VERIFYONLY FROM DISK = N'C:\backup\YourDatabaseName.bak' WITH NOUNLOAD;
 ```
 
-### 3.6 从备份文件获取数据库信息
+> 传入备份 ID 时，先查询备份路径再验证；传入文件路径时直接验证。
+
+### 从备份文件获取数据库信息
 
 ```sql
 RESTORE FILELISTONLY FROM DISK = N'C:\backup\YourDatabaseName.bak';
 ```
 
-### 3.7 注册备份到目录库
+### 注册备份（RegisterBackup）
 
 ```sql
 EXEC msdb.dbo.sp_add_backup_filehistory
@@ -231,15 +196,15 @@ EXEC msdb.dbo.sp_add_backup_filehistory
     @file_name = N'C:\backup\YourDatabaseName.bak';
 ```
 
-### 3.8 从目录库移除备份记录
+### 取消注册备份（UnregisterBackup）
 
 ```sql
 EXEC msdb.dbo.sp_delete_backuphistory @backup_set_id = 123;
 ```
 
-### 3.9 检查备份状态并更新
+### 检查备份状态（VerifyBackupStatus）
 
-代码实际流程：查询 `msdb.dbo.backupset` 和 `msdb.dbo.backupmediafamily` 获取备份记录，对每条记录执行 `RESTORE VERIFYONLY`，验证失败则删除该备份记录及对应的备份文件。
+三步流程：查询备份记录 → 逐个验证 → 清理无效记录。
 
 **步骤 1：查询备份记录**
 
@@ -258,7 +223,7 @@ WHERE bmf.device_type = 2;
 RESTORE VERIFYONLY FROM DISK = N'<backupPath>' WITH NOUNLOAD;
 ```
 
-**步骤 3：验证失败时删除备份记录和文件**
+**步骤 3：验证失败时删除备份记录和物理文件**
 
 ```sql
 SET NOCOUNT ON;
@@ -270,11 +235,11 @@ DELETE FROM msdb.dbo.backupfile WHERE backup_set_id = <id>;
 DELETE FROM msdb.dbo.backupset WHERE backup_set_id = <id>;
 ```
 
-验证失败后，代码还会删除对应的物理备份文件。
+验证失败后，同时删除对应的物理备份文件。
 
-### 3.10 删除无效的备份记录
+### 删除无效备份（DeleteInvalidBackups）
 
-代码实际流程：查询备份记录，检查备份文件在文件系统中是否存在，不存在则删除对应的备份记录。
+流程：查询备份记录 → 检查文件是否存在 → 删除不存在的记录。
 
 **步骤 1：查询备份记录**
 
@@ -287,7 +252,9 @@ JOIN msdb.dbo.backupmediafamily bmf ON bs.media_set_id = bmf.media_set_id
 WHERE bmf.device_type = 2;
 ```
 
-**步骤 2：对每条记录检查文件是否存在（Go 代码中通过 `os.Stat` 检查）**
+**步骤 2：对每条记录检查文件是否存在**
+
+> 检查 `physical_device_name` 对应的文件是否存在于文件系统。
 
 **步骤 3：文件不存在时删除备份记录**
 
@@ -301,7 +268,7 @@ DELETE FROM msdb.dbo.backupfile WHERE backup_set_id = <id>;
 DELETE FROM msdb.dbo.backupset WHERE backup_set_id = <id>;
 ```
 
-### 3.11 删除所有备份记录
+### 删除所有备份（DeleteAllBackups）
 
 ```sql
 SET NOCOUNT ON;
@@ -315,39 +282,13 @@ DELETE FROM msdb.dbo.backupmediafamily;
 DELETE FROM msdb.dbo.backupmediaset;
 ```
 
----
-
-## 4. Go 代码与底层命令映射
-
-> **🔗 代码映射指南**
->
-> 本部分列出了 `MSSQLBackup` 实现中的 Go 方法与底层 sqlcmd/T-SQL 命令的对应关系。
-
-| Go 方法                      | 对应的底层命令                                                                 |
-| ---------------------------- | ------------------------------------------------------------------------------ |
-| `Backup()`                   | `BACKUP DATABASE [...] TO DISK = N'<path>' WITH [...]`（`EnableCompression` 时追加 `COMPRESSION`） |
-| `Restore()`                  | `RESTORE DATABASE [...] FROM DISK = N'<path>' WITH [...]`（`Overwrite` 时追加 `REPLACE`） |
-| `Restore(PointInTime)`       | `RESTORE DATABASE [...] WITH STOPAT = '<time>', [...]`（`Overwrite` 时追加 `REPLACE`） |
-| `ListBackups()`              | `SELECT ... FROM msdb.dbo.backupset JOIN msdb.dbo.backupmediafamily ...`（CSV 格式输出） |
-| `DeleteBackup(backupID)`     | 删除相关表记录 + 删除物理备份文件（`backup_set_id` 为正整数时）                |
-| `DeleteBackup(time)`         | `EXEC msdb.dbo.sp_delete_backuphistory @oldest_date = '<time>';` + 删除物理备份文件 |
-| `ValidateBackup(backupID)`   | `backupID` 为正整数时先查询路径，为文件路径时直接使用；`RESTORE VERIFYONLY FROM DISK = N'<path>';` |
-| `GetBackupInfo(backupID)`    | `backupID` 非空时 `SELECT * FROM msdb.dbo.backupset WHERE backup_set_id = <id>;`，为空时返回最近 10 条 |
-| `RegisterBackup(backupPath)` | `EXEC msdb.dbo.sp_add_backup_filehistory @file_name = N'<path>';`              |
-| `UnregisterBackup(backupID)` | `EXEC msdb.dbo.sp_delete_backuphistory @backup_set_id = <id>;`                 |
-| `VerifyBackupStatus()`       | 查询备份记录，逐个执行 `RESTORE VERIFYONLY`，验证失败则删除记录及物理备份文件    |
-| `DeleteInvalidBackups()`     | 查询 msdb 备份记录，检查文件系统中对应文件是否存在，不存在则删除记录              |
-| `DeleteAllBackups()`         | 删除 msdb 中所有备份相关表（restorefilegroup、restorefile、restorehistory 等）+ 删除物理备份文件 |
+> 执行后同时删除所有对应的物理备份文件。
 
 ---
 
-## 5. 常用辅助查询
+## 辅助查询
 
-> **🔍 辅助查询指南**
->
-> 本部分提供了一些常用的 SQL 查询语句，用于监控数据库状态和备份情况。
-
-### 5.1 检查数据库恢复模式
+### 检查数据库恢复模式
 
 ```sql
 SELECT name, recovery_model_desc
@@ -355,7 +296,7 @@ FROM sys.databases
 WHERE name = 'YourDatabaseName';
 ```
 
-### 5.2 查看数据库文件位置
+### 查看数据库文件位置
 
 ```sql
 SELECT name, physical_name
@@ -363,7 +304,7 @@ FROM sys.master_files
 WHERE database_id = DB_ID('YourDatabaseName');
 ```
 
-### 5.3 查看最近的备份历史
+### 查看最近的备份历史
 
 ```sql
 SELECT TOP 10
@@ -376,13 +317,13 @@ FROM msdb.dbo.backupset
 ORDER BY backup_finish_date DESC;
 ```
 
-### 5.4 检查备份文件是否存在
+### 检查备份文件是否存在
 
 ```sql
 EXEC xp_fileexist 'C:\backup\YourDatabaseName.bak';
 ```
 
-### 5.5 获取数据库列表（排除系统数据库）
+### 获取数据库列表（排除系统数据库）
 
 ```sql
 SELECT name
@@ -394,13 +335,9 @@ ORDER BY name;
 
 ---
 
-## 6. 典型故障处理
+## 故障处理
 
-> **🛠️ 故障处理指南**
->
-> 本部分提供了一些常见故障的处理方法，帮助您快速解决备份和恢复过程中遇到的问题。
-
-### 6.1 还原时提示数据库正在使用
+### 还原时提示数据库正在使用
 
 ```sql
 USE master;
@@ -411,19 +348,19 @@ WITH REPLACE, STATS = 10;
 ALTER DATABASE [YourDatabaseName] SET MULTI_USER;
 ```
 
-### 6.2 备份文件损坏或无效
+### 备份文件损坏或无效
 
 ```sql
 RESTORE VERIFYONLY FROM DISK = N'C:\backup\YourDatabaseName.bak';
 ```
 
-### 6.3 事务日志已满
+### 事务日志已满
 
 ```sql
 BACKUP LOG [YourDatabaseName] TO DISK = N'C:\backup\YourDatabaseName_log.trn';
 ```
 
-### 6.4 数据库处于可疑状态
+### 数据库处于可疑状态
 
 ```sql
 USE master;
@@ -434,13 +371,9 @@ ALTER DATABASE [YourDatabaseName] SET ONLINE;
 
 ---
 
-## 7. 异机恢复指南
+## 异机恢复指南
 
-> **📋 异机恢复指南**
->
-> 异机恢复是将数据库从一台机器恢复到另一台机器的过程，适用于灾难恢复、系统迁移等场景。
-
-### 7.1 前提条件
+### 前提条件
 
 - **平台兼容性**：源机器和目标机器都是 Windows 平台
 - **SQL Server 版本**：目标数据库的 SQL Server 版本应与备份时的版本相同或更高
@@ -448,13 +381,13 @@ ALTER DATABASE [YourDatabaseName] SET ONLINE;
 - **目录结构**：目标数据库的目录结构应与备份时的结构一致，或在恢复时进行调整
 - **SQL Server 环境**：目标机器上已正确安装 SQL Server 数据库软件
 
-### 7.2 恢复步骤
+### 恢复步骤
 
 1. **准备环境**：在目标机器上安装 SQL Server 数据库软件
 2. **复制备份文件**：将源机器上的备份文件复制到目标机器的相应目录
 3. **还原数据库**：使用 RESTORE DATABASE 命令还原数据库，必要时使用 MOVE 选项调整文件路径
 
-### 7.3 命令示例
+### 命令示例
 
 ```sql
 USE master;
@@ -466,15 +399,9 @@ MOVE 'YourDatabaseName_Log' TO 'D:\data\YourDatabaseName.ldf',
 STATS = 10;
 ```
 
-### 7.4 注意事项
+### 注意事项
 
 - **目录路径调整**：如果目标机器的目录结构与备份时不同，需要使用 `MOVE` 选项调整文件路径
 - **SQL Server 环境**：确保目标机器上的 SQL Server 环境已正确安装
 - **备份文件验证**：在恢复前使用 `RESTORE VERIFYONLY` 命令验证备份文件的可用性
 - **权限**：确保 SQL Server 服务账户对备份文件和目标目录有足够的权限
-
----
-
-## 🔗 官方文档
-
-- [SQL Server 备份与还原官方文档](https://learn.microsoft.com/zh-cn/sql/relational-databases/backup-restore/back-up-and-restore-of-sql-server-databases?view=sql-server-ver17)
