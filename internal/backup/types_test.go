@@ -13,6 +13,8 @@ func TestParseBackupMode(t *testing.T) {
 		{"full", BackupModeFull, false},
 		{"incremental", BackupModeIncremental, false},
 		{"differential", BackupModeDifferential, false},
+		{"level0", BackupModeLevel0, false},
+		{"archive", BackupModeArchive, false},
 		{"invalid", "", true},
 		{"", "", true},
 	}
@@ -40,7 +42,7 @@ func TestParseBackupType(t *testing.T) {
 		{"logical", BackupTypeLogical, false},
 		{"physical", BackupTypePhysical, false},
 		{"invalid", "", true},
-		{"", "", true},
+		{"", BackupTypeLogical, false}, // 空值默认为 logical，与 ParseRestoreMode/ParseOutputFormat 一致
 	}
 
 	for _, tt := range tests {
@@ -52,6 +54,34 @@ func TestParseBackupType(t *testing.T) {
 			}
 			if !tt.wantErr && got != tt.want {
 				t.Errorf("ParseBackupType(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseRestoreMode(t *testing.T) {
+	tests := []struct {
+		input   string
+		want    RestoreMode
+		wantErr bool
+	}{
+		{"full", RestoreModeFull, false},
+		{"", RestoreModeFull, false},
+		{"incremental", RestoreModeIncremental, false},
+		{"archive", RestoreModeArchive, false},
+		{"controlfile", RestoreModeControlFile, false},
+		{"invalid", "", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got, err := ParseRestoreMode(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ParseRestoreMode(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && got != tt.want {
+				t.Errorf("ParseRestoreMode(%q) = %v, want %v", tt.input, got, tt.want)
 			}
 		})
 	}

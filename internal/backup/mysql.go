@@ -3,8 +3,6 @@ package backup
 import (
 	"context"
 	"errors"
-	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -26,8 +24,8 @@ func NewMySQLBackup(config *DBConfig) (*MySQLBackup, error) {
 		return nil, errors.New("config.Type 必须是 mysql")
 	}
 
-	mysqlPath := "mysql"
-	mysqldumpPath := "mysqldump"
+	mysqlPath := "mysql"         //nolint:goconst // 命令名，非数据库类型常量
+	mysqldumpPath := "mysqldump" //nolint:goconst // 命令名
 
 	if val := config.GetExtraTyped().MySQLBinPath(); val != "" {
 		mysqlPath = fileutil.AddExeExt(filepath.Join(val, "mysql"))
@@ -38,7 +36,7 @@ func NewMySQLBackup(config *DBConfig) (*MySQLBackup, error) {
 		BaseBackup:    BaseBackup{config: config},
 		mysqlPath:     mysqlPath,
 		mysqldumpPath: mysqldumpPath,
-		fsManager:     NewFileSystemBackupManager("", "mysql", nil),
+		fsManager:     NewFileSystemBackupManager(""),
 	}, nil
 }
 
@@ -52,7 +50,7 @@ func (m *MySQLBackup) Backup(ctx context.Context, opts BackupOptions, callback P
 	if backupDir == "" {
 		return nil, errors.New("必须通过 -target-path 参数指定备份路径")
 	}
-	if err := os.MkdirAll(backupDir, 0o755); err != nil {
+	if err := fileutil.EnsureDir(backupDir); err != nil {
 		return nil, err
 	}
 
@@ -68,12 +66,12 @@ func (m *MySQLBackup) Backup(ctx context.Context, opts BackupOptions, callback P
 
 	case BackupTypeLogical:
 		if len(databases) == 0 {
-			return m.backupAllDatabasesLogical(ctx, backupDir, callback)
+			return m.backupLogicalAll(ctx, backupDir, callback)
 		}
 		if len(databases) == 1 {
-			return m.backupSingleDatabaseLogical(ctx, backupDir, databases[0], callback)
+			return m.backupLogicalSingle(ctx, backupDir, databases[0], callback)
 		}
-		return m.backupMultipleDatabasesLogical(ctx, backupDir, databases, callback)
+		return m.backupLogicalMultiple(ctx, backupDir, databases, callback)
 
 	default:
 		return nil, errors.New("MySQL 仅支持 logical 和 physical 备份类型")
@@ -82,26 +80,9 @@ func (m *MySQLBackup) Backup(ctx context.Context, opts BackupOptions, callback P
 
 // Restore 执行 MySQL 还原（根据备份类型调用不同实现）
 func (m *MySQLBackup) Restore(ctx context.Context, opts RestoreOptions, callback ProgressCallback) (*RestoreResult, error) {
-	backupIdentifier := opts.BackupIdentifier
-	if backupIdentifier == "" {
-		return nil, errors.New("必须通过 --backup-identifier 参数指定备份文件或目录路径")
-	}
-
-	info, err := os.Stat(backupIdentifier)
+	isDir, err := m.validateRestoreIdentifier(opts.BackupIdentifier, opts.BackupType)
 	if err != nil {
-		return nil, fmt.Errorf("备份文件/目录不存在: %s", backupIdentifier)
-	}
-
-	// 检查备份类型是否与实际数据匹配
-	isDir := info.IsDir()
-	expectedLogical := opts.BackupType == BackupTypeLogical || opts.BackupType == "" // 默认逻辑备份
-	expectedPhysical := opts.BackupType == BackupTypePhysical
-
-	if expectedLogical && isDir {
-		return nil, fmt.Errorf("备份类型不匹配：指定为逻辑备份，但提供的是目录: %s", backupIdentifier)
-	}
-	if expectedPhysical && !isDir {
-		return nil, fmt.Errorf("备份类型不匹配：指定为物理备份，但提供的是文件: %s", backupIdentifier)
+		return nil, err
 	}
 
 	// 根据实际数据类型调用对应实现
@@ -133,8 +114,8 @@ func (m *MySQLBackup) DeleteAllBackups(ctx context.Context, opts ...BackupOption
 }
 
 // registerMySQLDriver 注册 MySQL 驱动
-func registerMySQLDriver() {
-	RegisterDriver(DriverMetadata{
+func registerMySQLDriver() error {
+	return RegisterDriver(DriverMetadata{
 		Name:                 DBTypeMySQL,
 		Version:              versionXML,
 		Description:          "MySQL 数据库备份驱动，支持 mysqldump 逻辑备份和文件级物理备份",

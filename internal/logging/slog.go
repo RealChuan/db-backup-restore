@@ -50,6 +50,7 @@ var (
 	globalLogger *slog.Logger
 	auditLogger  *slog.Logger
 	loggerMu     sync.RWMutex
+	closers      []io.Closer
 )
 
 // L returns the global logger. If Init has not been called, it returns a
@@ -71,12 +72,27 @@ func Audit() *slog.Logger {
 	return auditLogger
 }
 
+// Close gracefully closes all registered io.Closer resources (log files, etc.)
+// created during Init. It should be called before program exit.
+func Close() {
+	loggerMu.Lock()
+	defer loggerMu.Unlock()
+	for _, c := range closers {
+		_ = c.Close()
+	}
+	closers = nil
+}
+
 // Init initialises the logging system according to the supplied Config.
 func Init(cfg *Config) error {
 	level, err := parseLevel(cfg.Level)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: %v; falling back to info\n", err)
 		level = slog.LevelInfo
 	}
+
+	// Track all created closers so we can clean up on failure.
+	var createdClosers []io.Closer
 
 	var handlers []slog.Handler
 
@@ -89,6 +105,9 @@ func Init(cfg *Config) error {
 		w, err := newWriterForFile(cfg.LogFile, cfg.MaxFileSizeMB, cfg.MaxBackups)
 		if err != nil {
 			return fmt.Errorf("无法创建日志写入器: %w", err)
+		}
+		if c, ok := w.(io.Closer); ok {
+			createdClosers = append(createdClosers, c)
 		}
 		h := newFileHandler(cfg, w, level)
 		handlers = append(handlers, h)
@@ -106,6 +125,7 @@ func Init(cfg *Config) error {
 
 	loggerMu.Lock()
 	globalLogger = slog.New(handler)
+	closers = createdClosers
 	loggerMu.Unlock()
 
 	slog.SetDefault(globalLogger)
@@ -113,7 +133,17 @@ func Init(cfg *Config) error {
 	if cfg.AuditLogFile != "" {
 		w, err := newWriterForFile(cfg.AuditLogFile, cfg.MaxFileSizeMB, cfg.MaxBackups)
 		if err != nil {
+			// Clean up already-created main log writers before returning.
+			for _, c := range createdClosers {
+				_ = c.Close()
+			}
+			loggerMu.Lock()
+			closers = nil
+			loggerMu.Unlock()
 			return fmt.Errorf("无法创建审计日志写入器: %w", err)
+		}
+		if c, ok := w.(io.Closer); ok {
+			createdClosers = append(createdClosers, c)
 		}
 		auditHandler := slog.NewJSONHandler(w, &slog.HandlerOptions{
 			Level:       slog.LevelInfo,
@@ -121,6 +151,7 @@ func Init(cfg *Config) error {
 		})
 		loggerMu.Lock()
 		auditLogger = slog.New(auditHandler)
+		closers = createdClosers
 		loggerMu.Unlock()
 	}
 
@@ -227,10 +258,6 @@ func (rw *rotatingWriter) Write(p []byte) (n int, err error) {
 }
 
 func (rw *rotatingWriter) rotate() error {
-	if err := rw.file.Close(); err != nil {
-		return err
-	}
-
 	ext := filepath.Ext(rw.filePath)
 	base := rw.filePath[:len(rw.filePath)-len(ext)]
 
@@ -239,8 +266,14 @@ func (rw *rotatingWriter) rotate() error {
 		dst := fmt.Sprintf("%s.%d%s", base, i+1, ext)
 		if err := os.Rename(src, dst); err != nil {
 			if !os.IsNotExist(err) {
-				_ = os.Remove(dst)
-				_ = os.Rename(src, dst)
+				if removeErr := os.Remove(dst); removeErr != nil && !os.IsNotExist(removeErr) {
+					slog.Warn("rotate: failed to remove destination before rename retry",
+						"src", src, "dst", dst, "error", removeErr)
+				}
+				if renameErr := os.Rename(src, dst); renameErr != nil {
+					slog.Warn("rotate: rename retry failed",
+						"src", src, "dst", dst, "error", renameErr)
+				}
 			}
 		}
 	}
@@ -250,15 +283,21 @@ func (rw *rotatingWriter) rotate() error {
 		if err := os.Rename(rw.filePath, backupPath); err != nil {
 			if copyErr := copyFile(rw.filePath, backupPath); copyErr == nil {
 				_ = os.Remove(rw.filePath)
+			} else {
+				slog.Warn("rotate: failed to copy current log to backup",
+					"src", rw.filePath, "dst", backupPath, "error", copyErr)
 			}
 		}
 	}
 
-	file, err := os.OpenFile(rw.filePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	// Open the new file first; if this fails the old file remains usable.
+	newFile, err := os.OpenFile(rw.filePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
+		// Do not close old file — keep it writable.
 		return err
 	}
-	rw.file = file
+	rw.file.Close()
+	rw.file = newFile
 	rw.currentSize = 0
 	return nil
 }
@@ -342,6 +381,7 @@ func (h *consoleHandler) Enabled(_ context.Context, level slog.Level) bool {
 	return level >= h.level
 }
 
+//nolint:gocyclo // 复杂度来自属性分发和条件格式化，重构会降低可读性
 func (h *consoleHandler) Handle(_ context.Context, r slog.Record) error {
 	timestamp := r.Time.Format("2006-01-02 15:04:05.000")
 	levelStr := levelString(r.Level)
@@ -358,7 +398,23 @@ func (h *consoleHandler) Handle(_ context.Context, r slog.Record) error {
 
 	var traceID string
 	var cmdOutput string
-	var otherAttrs []string
+	otherAttrSet := make(map[string]string)
+	attrOrder := make([]string, 0)
+
+	// Process h.attrs first (handler defaults), then r.Attrs() (record overrides).
+	for _, a := range h.attrs {
+		switch a.Key {
+		case "trace_id":
+			traceID = a.Value.String()
+		case "cmd_output":
+			cmdOutput = a.Value.String()
+		default:
+			if _, exists := otherAttrSet[a.Key]; !exists {
+				attrOrder = append(attrOrder, a.Key)
+			}
+			otherAttrSet[a.Key] = fmt.Sprintf("%v", a.Value)
+		}
+	}
 
 	r.Attrs(func(a slog.Attr) bool {
 		switch a.Key {
@@ -367,20 +423,17 @@ func (h *consoleHandler) Handle(_ context.Context, r slog.Record) error {
 		case "cmd_output":
 			cmdOutput = a.Value.String()
 		default:
-			otherAttrs = append(otherAttrs, fmt.Sprintf("%s=%v", a.Key, a.Value))
+			if _, exists := otherAttrSet[a.Key]; !exists {
+				attrOrder = append(attrOrder, a.Key)
+			}
+			otherAttrSet[a.Key] = fmt.Sprintf("%v", a.Value)
 		}
 		return true
 	})
 
-	for _, a := range h.attrs {
-		switch a.Key {
-		case "trace_id":
-			traceID = a.Value.String()
-		case "cmd_output":
-			cmdOutput = a.Value.String()
-		default:
-			otherAttrs = append(otherAttrs, fmt.Sprintf("%s=%v", a.Key, a.Value))
-		}
+	var otherAttrs []string
+	for _, key := range attrOrder {
+		otherAttrs = append(otherAttrs, fmt.Sprintf("%s=%s", key, otherAttrSet[key]))
 	}
 
 	var buf bytes.Buffer
@@ -426,6 +479,9 @@ func (h *consoleHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	}
 }
 
+// WithGroup returns a new handler with the given group appended. Note:
+// consoleHandler does not support group semantics — the group name is
+// recorded but ignored during formatting.
 func (h *consoleHandler) WithGroup(name string) slog.Handler {
 	newGroups := make([]string, len(h.groups)+1)
 	copy(newGroups, h.groups)
@@ -679,7 +735,7 @@ func AuditLog(action, dbType, status string, details ...string) {
 // FormatCommandOutput formats command output in a box-drawing style for
 // display. It filters empty lines and separator lines, and truncates output
 // longer than 30 lines.
-func FormatCommandOutput(cmd, output string, _ bool) string {
+func FormatCommandOutput(cmd, output string) string {
 	var buf bytes.Buffer
 	lines := strings.Split(output, "\n")
 
@@ -723,7 +779,7 @@ func FormatCommandOutput(cmd, output string, _ bool) string {
 // LogCommand logs command execution output. If isError is true, it logs at
 // error level; otherwise at debug level.
 func LogCommand(cmd, output string, isError bool) {
-	formattedOutput := FormatCommandOutput(cmd, output, isError)
+	formattedOutput := FormatCommandOutput(cmd, output)
 	level := slog.LevelDebug
 	msg := "命令执行输出"
 	if isError {

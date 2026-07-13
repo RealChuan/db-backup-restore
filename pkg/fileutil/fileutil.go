@@ -3,25 +3,21 @@ package fileutil
 import (
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
 )
 
-// isWindows 判断是否为 Windows 系统（内部使用）
-func isWindows() bool {
-	return runtime.GOOS == "windows"
-}
-
-// IsWindows 判断是否为 Windows 系统（公开接口）
+// IsWindows 判断是否为 Windows 系统
 func IsWindows() bool {
-	return isWindows()
+	return runtime.GOOS == "windows"
 }
 
 // AddExeExt 如果是 Windows 系统且无扩展名，添加 .exe 扩展名
 func AddExeExt(path string) string {
-	if !isWindows() {
+	if !IsWindows() {
 		return path
 	}
 	if filepath.Ext(path) == "" {
@@ -61,11 +57,15 @@ func IsAdmin() bool {
 // GetDirSize 计算目录大小
 func GetDirSize(path string) int64 {
 	var size int64
-	err := filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
+	err := filepath.WalkDir(path, func(_ string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if !info.IsDir() {
+		if !d.IsDir() {
+			info, infoErr := d.Info()
+			if infoErr != nil {
+				return infoErr
+			}
 			size += info.Size()
 		}
 		return nil
@@ -98,21 +98,84 @@ func CopyDir(srcDir, dstDir string) error {
 		if err != nil {
 			return err
 		}
-		defer srcFile.Close()
 
 		dstFile, err := os.Create(dstPath)
 		if err != nil {
+			closeErr := srcFile.Close()
+			if closeErr != nil {
+				slog.Warn("CopyDir 关闭源文件失败", "path", path, "error", closeErr)
+			}
 			return err
 		}
-		defer dstFile.Close()
 
 		_, err = io.CopyBuffer(dstFile, srcFile, make([]byte, 32*1024))
 		if err != nil {
+			closeErr := srcFile.Close()
+			if closeErr != nil {
+				slog.Warn("CopyDir 关闭源文件失败", "path", path, "error", closeErr)
+			}
+			closeErr = dstFile.Close()
+			if closeErr != nil {
+				slog.Warn("CopyDir 关闭目标文件失败", "path", dstPath, "error", closeErr)
+			}
 			return err
+		}
+
+		if syncErr := dstFile.Sync(); syncErr != nil {
+			closeErr := srcFile.Close()
+			if closeErr != nil {
+				slog.Warn("CopyDir 关闭源文件失败", "path", path, "error", closeErr)
+			}
+			closeErr = dstFile.Close()
+			if closeErr != nil {
+				slog.Warn("CopyDir 关闭目标文件失败", "path", dstPath, "error", closeErr)
+			}
+			return fmt.Errorf("sync 目标文件失败: %w", syncErr)
+		}
+
+		if closeErr := srcFile.Close(); closeErr != nil {
+			slog.Warn("CopyDir 关闭源文件失败", "path", path, "error", closeErr)
+		}
+		if closeErr := dstFile.Close(); closeErr != nil {
+			slog.Warn("CopyDir 关闭目标文件失败", "path", dstPath, "error", closeErr)
 		}
 
 		return os.Chmod(dstPath, info.Mode())
 	})
+}
+
+// CopyFile 复制单个文件从 src 到 dst
+func CopyFile(src, dst string) (err error) {
+	sourceFile, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer sourceFile.Close()
+
+	dstFile, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		closeErr := dstFile.Close()
+		if err == nil {
+			err = closeErr
+		}
+	}()
+
+	if _, err = io.Copy(dstFile, sourceFile); err != nil {
+		return err
+	}
+
+	if err = dstFile.Sync(); err != nil {
+		return err
+	}
+
+	sourceInfo, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	return os.Chmod(dst, sourceInfo.Mode())
 }
 
 // EnsureDir 确保目录存在，不存在则创建

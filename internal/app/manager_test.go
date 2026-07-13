@@ -61,14 +61,16 @@ func (f *fakeDriver) DeleteAllBackups(ctx context.Context, _ ...backup.BackupOpt
 const fakeDriverName = "fake-test-driver"
 
 func TestManagerApp_ListDatabases_Success(t *testing.T) {
-	backup.RegisterDriver(backup.DriverMetadata{
+	if err := backup.RegisterDriver(backup.DriverMetadata{
 		Name:             fakeDriverName,
 		Version:          "test",
 		Description:      "fake driver for testing",
 		SupportedActions: []string{"list_databases"},
 	}, func(cfg *backup.DBConfig) (backup.DatabaseBackup, error) {
 		return newFakeDriver(cfg, []string{"db_alpha", "db_beta", "db_gamma"}, nil), nil
-	})
+	}); err != nil {
+		t.Fatalf("注册驱动失败: %v", err)
+	}
 	defer backup.UnregisterDriver(fakeDriverName)
 
 	cfg := &config.Config{
@@ -110,14 +112,16 @@ func TestManagerApp_ListDatabases_Success(t *testing.T) {
 
 func TestManagerApp_ListDatabases_NotSupported(t *testing.T) {
 	const notSupName = fakeDriverName + "-nosup"
-	backup.RegisterDriver(backup.DriverMetadata{
+	if err := backup.RegisterDriver(backup.DriverMetadata{
 		Name:        notSupName,
 		Version:     "test",
 		Description: "fake driver returning not-supported",
 	}, func(cfg *backup.DBConfig) (backup.DatabaseBackup, error) {
 		listErr := backup.NewNotSupportedError(context.Background(), "ListDatabases", cfg.Type)
 		return newFakeDriver(cfg, nil, listErr), nil
-	})
+	}); err != nil {
+		t.Fatalf("注册驱动失败: %v", err)
+	}
 	defer backup.UnregisterDriver(notSupName)
 
 	cfg := &config.Config{

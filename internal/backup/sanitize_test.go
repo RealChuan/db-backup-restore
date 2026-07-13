@@ -189,3 +189,220 @@ func TestMustBeUnderBackupDir(t *testing.T) {
 		})
 	}
 }
+
+func TestEscapeDamengRMANString(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"无特殊字符", `/opt/backup`, `/opt/backup`},
+		{"包含单引号", `/opt/'backup'`, `/opt/''backup''`},
+		{"多个单引号", `'a'b'c'`, `''a''b''c''`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := escapeDamengRMANString(tt.input); got != tt.want {
+				t.Errorf("escapeDamengRMANString(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSanitizeSCN(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		input   string
+		want    int
+		wantErr bool
+	}{
+		{"valid scn", "123456789", 123456789, false},
+		{"empty", "", 0, true},
+		{"negative", "-1", 0, true},
+		{"zero", "0", 0, true},
+		{"non_numeric", "abc", 0, true},
+		{"with_spaces", " 123 ", 123, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := sanitizeSCN(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("sanitizeSCN(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("sanitizeSCN(%q) = %d, want %d", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSanitizeSeq(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		input   string
+		want    int
+		wantErr bool
+	}{
+		{"valid seq", "100", 100, false},
+		{"empty", "", 0, true},
+		{"negative", "-5", 0, true},
+		{"zero", "0", 0, true},
+		{"non_numeric", "1a2b", 0, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := sanitizeSeq(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("sanitizeSeq(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("sanitizeSeq(%q) = %d, want %d", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSanitizeLSN(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		input   string
+		want    int
+		wantErr bool
+	}{
+		{"valid lsn", "99999", 99999, false},
+		{"empty", "", 0, true},
+		{"negative", "-1", 0, true},
+		{"zero", "0", 0, true},
+		{"non_numeric", "abc", 0, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := sanitizeLSN(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("sanitizeLSN(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("sanitizeLSN(%q) = %d, want %d", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSanitizeDamengBackupPath(t *testing.T) {
+	t.Run("有效路径", func(t *testing.T) {
+		validPath := "/opt/dmdbms/backup"
+		if runtime.GOOS == "windows" {
+			validPath = `C:\opt\dmdbms\backup`
+		}
+		err := sanitizeDamengBackupPath(validPath)
+		if err != nil {
+			t.Errorf("有效路径不应报错，得到: %v", err)
+		}
+	})
+
+	t.Run("空路径", func(t *testing.T) {
+		err := sanitizeDamengBackupPath("")
+		if err == nil {
+			t.Error("空路径应报错")
+		}
+	})
+
+	t.Run("相对路径", func(t *testing.T) {
+		err := sanitizeDamengBackupPath("relative/path")
+		if err == nil {
+			t.Error("相对路径应报错")
+		}
+	})
+
+	t.Run("包含分号", func(t *testing.T) {
+		err := sanitizeDamengBackupPath("/opt/backup;rm -rf /")
+		if err == nil {
+			t.Error("包含分号的路径应报错")
+		}
+	})
+
+	t.Run("包含反引号", func(t *testing.T) {
+		err := sanitizeDamengBackupPath("/opt/`whoami`")
+		if err == nil {
+			t.Error("包含反引号的路径应报错")
+		}
+	})
+
+	t.Run("包含美元符号", func(t *testing.T) {
+		err := sanitizeDamengBackupPath("/opt/$HOME/backup")
+		if err == nil {
+			t.Error("包含美元符号的路径应报错")
+		}
+	})
+
+	t.Run("包含单引号", func(t *testing.T) {
+		err := sanitizeDamengBackupPath("/opt/backup'")
+		if err == nil {
+			t.Error("包含单引号的路径应报错")
+		}
+	})
+}
+
+func TestValidateDamengPassword(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		password string
+		wantErr  bool
+	}{
+		{"正常密码", "MyPassword123", false},
+		{"含井号", "Pass#word!", false},
+		{"含美元符", "My$ecret", false},
+		{"含感叹号", "P@ssword", true}, // @ 是危险字符
+		{"含斜杠", "Pass/word", true},
+		{"空密码", "", false},
+		{"仅含特殊字符但无危险字符", "#$%^&*!", false},
+		{"含at符号和斜杠", "a/b@c", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateDamengPassword(tt.password)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateDamengPassword(%q) error = %v, wantErr %v", tt.password, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateRemapSchema(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		remap   string
+		wantErr bool
+	}{
+		{"有效映射", "HR:HR_NEW", false},
+		{"有效映射含下划线", "SCHEMA_A:SCHEMA_B", false},
+		{"缺少冒号", "HRHR", true},
+		{"空源模式", ":TARGET", true},
+		{"空目标模式", "SOURCE:", true},
+		{"两端为空", ":", true},
+		{"源模式含危险字符", "HR';DROP:TARGET", true},
+		{"目标模式含危险字符", "HR:TAR;GET", true},
+		{"空字符串", "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateRemapSchema(tt.remap)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateRemapSchema(%q) error = %v, wantErr %v", tt.remap, err, tt.wantErr)
+			}
+		})
+	}
+}

@@ -38,6 +38,16 @@ ALTER DATABASE OPEN;
 
 **Windows 路径示例**：`LOCATION=D:\archivelog`
 
+**CLI 命令**：
+
+```bash
+# 启用 Oracle 归档模式（使用默认归档目录）
+db-backup-restore enable-archive -c config.json -t oracle
+
+# 启用 Oracle 归档模式（指定归档目录）
+db-backup-restore enable-archive -c config.json -t oracle --archive-dest /u01/archivelog
+```
+
 ### 禁用归档模式
 
 > **警告**：禁用归档模式会限制恢复能力，不推荐在生产环境使用。
@@ -47,6 +57,13 @@ SHUTDOWN IMMEDIATE;
 STARTUP MOUNT;
 ALTER DATABASE NOARCHIVELOG;
 ALTER DATABASE OPEN;
+```
+
+**CLI 命令**：
+
+```bash
+# 关闭 Oracle 归档模式
+db-backup-restore disable-archive -c config.json -t oracle
 ```
 
 ---
@@ -68,7 +85,26 @@ RUN {
 DELETE NOPROMPT OBSOLETE;
 ```
 
-### 增量备份
+### Level 0 增量基础备份
+
+Level 0 增量备份是增量策略的基础。虽然 Level 0 备份的数据内容与全量备份相同，但 RMAN 会将其记录为增量备份，使其可以作为后续 Level 1 增量备份的父备份。
+
+> **重要**：如果计划使用增量备份策略，必须先创建 Level 0 备份，而非全量备份。全量备份不被 RMAN 视为增量策略的一部分。
+
+```rman
+RUN {
+  ALLOCATE CHANNEL ch1 DEVICE TYPE DISK FORMAT '/backup/%U';
+  BACKUP INCREMENTAL LEVEL 0 DATABASE PLUS ARCHIVELOG DELETE INPUT FORMAT '/backup/%U';
+  BACKUP CURRENT CONTROLFILE FORMAT '/backup/cf_%U';
+  BACKUP SPFILE FORMAT '/backup/spfile_%U';
+  RELEASE CHANNEL ch1;
+}
+DELETE NOPROMPT OBSOLETE;
+```
+
+### 差异增量备份（Incremental Level 1）
+
+Oracle 的差异增量备份（Differential Incremental）备份自上次 Level 0 或 Level 1 备份以来所有变化的块：
 
 ```rman
 RUN {
@@ -81,9 +117,11 @@ RUN {
 DELETE NOPROMPT OBSOLETE;
 ```
 
-### 差异备份
+### 累积增量备份（Incremental Level 1 Cumulative）
 
-在 Oracle 中，差异备份使用 `CUMULATIVE` 关键字：
+Oracle 的累积增量备份（Cumulative Incremental）备份自上次 Level 0 备份以来所有变化的块。相比差异增量，累积增量备份数据量更大，但还原时只需应用 Level 0 和最新的累积增量备份即可。
+
+> **术语说明**：本工具的 `--backup-mode differential` 对应 Oracle 的累积增量备份（CUMULATIVE），而 `--backup-mode incremental` 对应 Oracle 的差异增量备份（默认 LEVEL 1）。
 
 ```rman
 RUN {
@@ -94,6 +132,18 @@ RUN {
   RELEASE CHANNEL ch1;
 }
 DELETE NOPROMPT OBSOLETE;
+```
+
+### 独立归档日志备份
+
+在增量备份策略中，通常需要在全量/增量备份之间单独备份归档日志，以减少数据丢失风险：
+
+```rman
+RUN {
+  ALLOCATE CHANNEL ch1 DEVICE TYPE DISK FORMAT '/backup/arch_%U';
+  BACKUP ARCHIVELOG ALL FORMAT '/backup/arch_%U';
+  RELEASE CHANNEL ch1;
+}
 ```
 
 ### 并行备份
@@ -207,6 +257,91 @@ DUPLICATE TARGET DATABASE TO newdb
   PARAMETER_VALUE_CONVERT '/old_path/','/new_path/'
   SET DB_FILE_NAME_CONVERT '/old_data/','/new_data/';
 ```
+
+### 增量还原（NOREDO 模式）
+
+跳过归档日志应用，仅还原数据文件：
+
+```bash
+db-backup-restore restore -c config.json -t oracle --backup-type physical \
+  --restore-mode incremental --backup-identifier /backup/oracle --no-redo
+```
+
+### 归档还原（按序列号范围）
+
+```bash
+# 还原归档日志序列号 100 到 200
+db-backup-restore restore -c config.json -t oracle --backup-type physical \
+  --restore-mode archive --archive-from-seq 100 --archive-until-seq 200
+```
+
+### 控制文件还原（控制文件丢失的灾难恢复）
+
+```bash
+# 从自动备份还原控制文件
+db-backup-restore restore -c config.json -t oracle --backup-type physical --restore-mode controlfile
+
+# 指定 TAG 还原控制文件
+db-backup-restore restore -c config.json -t oracle --backup-type physical \
+  --restore-mode controlfile --backup-identifier TAG20260703T120000
+```
+
+### 按 SCN 还原
+
+```bash
+# 按 SCN 还原
+db-backup-restore restore -c config.json -t oracle --backup-type physical --scn 123456789
+
+# 按 TAG + SCN 组合还原
+db-backup-restore restore -c config.json -t oracle --backup-type physical \
+  --backup-identifier TAG20260703T120000 --scn 123456789
+```
+
+---
+
+### 自动幽灵对象清理
+
+在备份或还原前自动执行 RMAN 幽灵对象清理，消除控制文件/恢复目录中引用了已不存在物理文件的"幽灵"记录，避免后续操作因找不到文件而报错。
+
+#### 触发时机
+
+| 操作    | 触发条件                                             |
+| ------- | ---------------------------------------------------- |
+| Backup  | `AUTO_GHOST_CLEANUP` 配置为 `true`（默认）时自动触发 |
+| Restore | **无条件触发**，不受 `AUTO_GHOST_CLEANUP` 配置控制   |
+
+#### RMAN 命令序列
+
+清理脚本依次执行以下 5 条 RMAN 命令：
+
+```rman
+CROSSCHECK BACKUP;
+CROSSCHECK ARCHIVELOG ALL;
+DELETE NOPROMPT EXPIRED BACKUP;
+DELETE NOPROMPT EXPIRED ARCHIVELOG ALL;
+DELETE NOPROMPT OBSOLETE;
+```
+
+| 步骤 | 命令                                     | 作用                                   |
+| ---- | ---------------------------------------- | -------------------------------------- |
+| 1    | `CROSSCHECK BACKUP`                      | 标记物理文件已缺失的备份集为 EXPIRED   |
+| 2    | `CROSSCHECK ARCHIVELOG ALL`              | 标记物理文件已缺失的归档日志为 EXPIRED |
+| 3    | `DELETE NOPROMPT EXPIRED BACKUP`         | 删除 EXPIRED 状态的备份记录            |
+| 4    | `DELETE NOPROMPT EXPIRED ARCHIVELOG ALL` | 删除 EXPIRED 状态的归档日志记录        |
+| 5    | `DELETE NOPROMPT OBSOLETE`               | 删除按保留策略已过期的备份             |
+
+#### 配置控制
+
+通过 Oracle Extra 参数 `AUTO_GHOST_CLEANUP` 控制备份前是否执行清理：
+
+- `"true"`（默认）：备份前自动执行清理
+- `"false"`：备份前跳过清理
+
+> **注意**：还原前始终执行清理，不受此参数影响。
+
+#### 失败处理
+
+清理失败仅记录警告日志，**不阻塞后续备份/还原流程**。
 
 ---
 

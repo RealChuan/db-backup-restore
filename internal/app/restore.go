@@ -13,10 +13,17 @@ import (
 
 // RestoreOptions 还原应用层的选项参数。
 type RestoreOptions struct {
-	BackupIdentifier    string // 备份标识符（Oracle: 标签名, MSSQL/MySQL/PostgreSQL: 备份文件路径）
-	TargetDatabaseName  string // 还原的目标数据库名
+	BackupIdentifier    string // 备份标识符（Oracle/达梦: TAG 或备份集路径; MySQL/PostgreSQL/MSSQL: 备份文件路径）
+	TargetDatabaseName  string // 还原的目标数据库名（MySQL/PostgreSQL/MSSQL 逻辑还原时指定）
+	RemapSchema         string // 模式映射（达梦 dimp: REMAP_SCHEMA=source:target，将源模式数据导入目标模式）
 	Type                string // 备份类型: logical, physical
-	RecoveryPointInTime string // 时间点恢复，格式: RFC3339 或 2006-01-02T15:04:05
+	RecoveryPointInTime string // 时间点还原，格式: 2006-01-02T15:04:05（Oracle/达梦支持，可与 BackupIdentifier 组合）
+	RestoreMode         string // 还原模式: full, incremental, archive, controlfile（Oracle/达梦支持）
+	RecoverySCN         string // 按 SCN 还原（仅 Oracle 支持，可与 BackupIdentifier 组合）
+	RecoveryLSN         string // 按 LSN 还原（仅达梦支持，配合 archive 模式使用）
+	NoRedo              bool   // 增量还原时跳过归档日志应用，即 NOREDO（仅 Oracle 支持）
+	ArchiveFromSeq      string // 归档还原起始序列号（仅 Oracle 支持，配合 archive 模式使用）
+	ArchiveUntilSeq     string // 归档还原结束序列号（仅 Oracle 支持，配合 archive 模式使用）
 }
 
 // RestoreApp 封装还原操作的应用服务。
@@ -32,44 +39,17 @@ func NewRestoreApp(cfg *config.Config, notifier *notify.Notifier) *RestoreApp {
 
 // Run 执行还原操作。
 func (a *RestoreApp) Run(ctx context.Context, dbType string, opts RestoreOptions) (*OperationResult, error) {
-	logging.Debug("=== 开始还原 ===")
+	logging.InfoCtx(ctx, "开始还原", "db_type", dbType, "type", opts.Type)
 
-	if opts.BackupIdentifier == "" && opts.RecoveryPointInTime == "" {
-		return nil, fmt.Errorf("必须指定 BackupIdentifier 或 RecoveryPointInTime 参数")
-	}
-
-	if opts.BackupIdentifier == "" && dbType != "oracle" && opts.RecoveryPointInTime != "" {
-		return nil, fmt.Errorf("时间点恢复仅支持 Oracle 数据库")
-	}
-
-	backupTypeVal, err := backup.ParseBackupType(opts.Type)
+	restoreOpts, err := a.buildRestoreOptions(dbType, opts)
 	if err != nil {
-		logging.AuditLog(OpRestore, dbType, "failed", "无效的备份类型: "+opts.Type)
 		return nil, err
-	}
-
-	restoreOpts := backup.RestoreOptions{
-		BackupIdentifier:   opts.BackupIdentifier,
-		TargetDatabaseName: opts.TargetDatabaseName,
-		BackupType:         backupTypeVal,
-		Overwrite:          true,
-	}
-
-	if opts.RecoveryPointInTime != "" {
-		pointInTimeVal, err := parseTime(opts.RecoveryPointInTime)
-		if err != nil {
-			logging.AuditLog(OpRestore, dbType, "failed", "无效的时间格式: "+opts.RecoveryPointInTime)
-			return nil, fmt.Errorf("无效的时间格式: %w", err)
-		}
-		restoreOpts.RecoveryPointInTime = pointInTimeVal
 	}
 
 	var result *backup.RestoreResult
 	err = withDatabaseBackup(ctx, a.cfg, OpRestore, dbType, func(ctx context.Context, db backup.DatabaseBackup) error {
 		var err error
-		result, err = db.Restore(ctx, restoreOpts, func(percent float64, msg string) {
-			logging.DebugCtx(ctx, "还原进度", "percent", fmt.Sprintf("%.2f", percent), "msg", msg)
-		})
+		result, err = db.Restore(ctx, restoreOpts, nil)
 		if err != nil {
 			logging.AuditLog(OpRestore, dbType, "failed", err.Error())
 			a.notify(ctx, OpRestore, dbType, "failed", err.Error())
@@ -86,6 +66,62 @@ func (a *RestoreApp) Run(ctx context.Context, dbType string, opts RestoreOptions
 		return nil, err
 	}
 
+	return a.buildRestoreResult(dbType, result), nil
+}
+
+// buildRestoreOptions 校验参数并构建 backup.RestoreOptions。
+func (a *RestoreApp) buildRestoreOptions(dbType string, opts RestoreOptions) (backup.RestoreOptions, error) {
+	if opts.BackupIdentifier == "" && opts.RecoveryPointInTime == "" {
+		return backup.RestoreOptions{}, fmt.Errorf("必须指定 BackupIdentifier 或 RecoveryPointInTime 参数")
+	}
+
+	if opts.RecoveryPointInTime != "" && dbType != "oracle" && dbType != "dameng" {
+		return backup.RestoreOptions{}, fmt.Errorf("时间点还原仅支持 Oracle 和达梦数据库")
+	}
+
+	backupTypeVal, err := backup.ParseBackupType(opts.Type)
+	if err != nil {
+		logging.AuditLog(OpRestore, dbType, "failed", "无效的备份类型: "+opts.Type)
+		return backup.RestoreOptions{}, err
+	}
+
+	restoreModeVal, err := backup.ParseRestoreMode(opts.RestoreMode)
+	if err != nil {
+		logging.AuditLog(OpRestore, dbType, "failed", "无效的还原模式: "+opts.RestoreMode)
+		return backup.RestoreOptions{}, err
+	}
+
+	// typeDir 由 ParseBackupType 保证非空（空值默认为 logical）。
+	typeDir := string(backupTypeVal)
+
+	restoreOpts := backup.RestoreOptions{
+		BackupIdentifier:   opts.BackupIdentifier,
+		TargetDatabaseName: opts.TargetDatabaseName,
+		RemapSchema:        opts.RemapSchema,
+		BackupType:         backupTypeVal,
+		RestoreMode:        restoreModeVal,
+		RecoverySCN:        opts.RecoverySCN,
+		RecoveryLSN:        opts.RecoveryLSN,
+		NoRedo:             opts.NoRedo,
+		ArchiveFromSeq:     opts.ArchiveFromSeq,
+		ArchiveUntilSeq:    opts.ArchiveUntilSeq,
+		ArchiveLogDest:     archiveLogDir(a.cfg.BaseBackupDir, dbType, typeDir),
+	}
+
+	if opts.RecoveryPointInTime != "" {
+		pointInTimeVal, err := parseTime(opts.RecoveryPointInTime)
+		if err != nil {
+			logging.AuditLog(OpRestore, dbType, "failed", "无效的时间格式: "+opts.RecoveryPointInTime)
+			return backup.RestoreOptions{}, fmt.Errorf("无效的时间格式: %w", err)
+		}
+		restoreOpts.RecoveryPointInTime = pointInTimeVal
+	}
+
+	return restoreOpts, nil
+}
+
+// buildRestoreResult 构建还原操作的返回结果。
+func (a *RestoreApp) buildRestoreResult(dbType string, result *backup.RestoreResult) *OperationResult {
 	data := map[string]interface{}{
 		DataKeyDuration: result.Duration.String(),
 	}
@@ -102,14 +138,14 @@ func (a *RestoreApp) Run(ctx context.Context, dbType string, opts RestoreOptions
 		DBType:    dbType,
 		Message:   "还原成功",
 		Data:      data,
-	}, nil
+	}
 }
 
 // notify 发送通知，如果 notifier 为 nil 则忽略
 func (a *RestoreApp) notify(ctx context.Context, operation, dbType, status, message string) {
 	if a.notifier != nil {
 		if err := a.notifier.Notify(ctx, operation, dbType, status, message); err != nil {
-			logging.Error("发送通知失败", "error", err)
+			logging.ErrorCtx(ctx, "发送通知失败", "error", err)
 		}
 	}
 }

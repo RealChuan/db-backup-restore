@@ -276,8 +276,8 @@ func TestGetExtraSpec(t *testing.T) {
 }
 
 func TestGetAllExtraSpecs(t *testing.T) {
-	if specs := GetAllExtraSpecs(); len(specs) < 4 {
-		t.Errorf("GetAllExtraSpecs() 应返回至少4种类型，得到 %d", len(specs))
+	if specs := GetAllExtraSpecs(); len(specs) < 5 {
+		t.Errorf("GetAllExtraSpecs() 应返回至少5种类型，得到 %d", len(specs))
 	}
 }
 
@@ -286,7 +286,7 @@ func TestExtraHelpMarkdown(t *testing.T) {
 	if result == "" {
 		t.Fatal("ExtraHelpMarkdown() 不应返回空字符串")
 	}
-	for _, kw := range []string{"MySQL", "PostgreSQL", "Oracle", extraMySQLBinPath, extraOracleHome, extraPGBinPath, extraAuthType} {
+	for _, kw := range []string{"MySQL", "PostgreSQL", "Oracle", extraMySQLBinPath, extraOracleHome, extraPGBinPath, extraAuthType, "达梦", extraDamengHome} {
 		if !strings.Contains(result, kw) {
 			t.Errorf("ExtraHelpMarkdown() 结果应包含 %q", kw)
 		}
@@ -357,5 +357,78 @@ func TestLoadConfig_ValidateExtra_Valid(t *testing.T) {
 	mysqlCfg := cfg.Databases[dbTypeMySQL]
 	if got := mysqlCfg.GetExtraTyped().MySQLBinPath(); got != "/usr/bin" {
 		t.Errorf("MySQLBinPath() = %v, want /usr/bin", got)
+	}
+}
+
+func TestValidateExtra_Dameng(t *testing.T) {
+	t.Run("缺少必填项DM_HOME", func(t *testing.T) {
+		cfg := &DBConfig{Type: dbTypeDameng, Host: defaultHost, Port: 5236, Extra: map[string]string{}}
+		errs := cfg.ValidateExtra()
+		if len(errs) == 0 {
+			t.Fatal("期望至少1个错误，但返回空")
+		}
+		errMsg := errs[0].Error()
+		if !strings.Contains(errMsg, extraDamengHome) {
+			t.Errorf("错误信息应包含 %s，得到: %v", extraDamengHome, errMsg)
+		}
+	})
+
+	t.Run("完整配置有效", func(t *testing.T) {
+		cfg := &DBConfig{
+			Type:  dbTypeDameng,
+			Host:  defaultHost,
+			Port:  5236,
+			Extra: map[string]string{extraDamengHome: "/opt/dmdbms", extraDamengInstance: "DMSERVER"},
+		}
+		if errs := cfg.ValidateExtra(); len(errs) > 0 {
+			t.Errorf("期望无错误，得到: %v", errs)
+		}
+	})
+
+	t.Run("未知字段报错", func(t *testing.T) {
+		cfg := &DBConfig{
+			Type:  dbTypeDameng,
+			Host:  defaultHost,
+			Port:  5236,
+			Extra: map[string]string{extraDamengHome: "/opt/dmdbms", "INVALID_KEY": "value"},
+		}
+		errs := cfg.ValidateExtra()
+		if len(errs) == 0 {
+			t.Fatal("期望有错误，但返回空")
+		}
+		if !strings.Contains(errs[0].Error(), "INVALID_KEY") {
+			t.Errorf("错误信息应包含 INVALID_KEY，得到: %v", errs[0])
+		}
+	})
+
+	t.Run("仅DM_HOME必填", func(t *testing.T) {
+		cfg := &DBConfig{
+			Type:  dbTypeDameng,
+			Host:  defaultHost,
+			Port:  5236,
+			Extra: map[string]string{extraDamengHome: "/opt/dmdbms"},
+		}
+		if errs := cfg.ValidateExtra(); len(errs) > 0 {
+			t.Errorf("仅 DM_HOME 时不应报错，得到: %v", errs)
+		}
+	})
+}
+
+func TestTypedExtra_Dameng(t *testing.T) {
+	extra := (&DBConfig{
+		Extra: map[string]string{
+			extraDamengHome:     "/opt/dmdbms",
+			extraDamengInstance: "DMSERVER",
+			extraDamengDataDir:  "/opt/dmdbms/data/DAMENG",
+		},
+	}).GetExtraTyped()
+	if got := extra.DamengHome(); got != "/opt/dmdbms" {
+		t.Errorf("DamengHome() = %v, want /opt/dmdbms", got)
+	}
+	if got := extra.DamengInstance(); got != "DMSERVER" {
+		t.Errorf("DamengInstance() = %v, want DMSERVER", got)
+	}
+	if got := extra.DamengDataDir(); got != "/opt/dmdbms/data/DAMENG" {
+		t.Errorf("DamengDataDir() = %v, want /opt/dmdbms/data/DAMENG", got)
 	}
 }

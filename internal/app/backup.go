@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"time"
 
 	"github.com/RealChuan/db-backup-restore/internal/app/notify"
@@ -14,10 +13,15 @@ import (
 
 // BackupOptions 备份应用层的选项参数。
 type BackupOptions struct {
-	Mode              string // 备份模式: full, incremental, differential
+	Mode              string // 备份模式: full, incremental, differential, level0, archive
 	Type              string // 备份类型: logical, physical
-	ParallelWorkers   int    // 并行工作线程数
+	ParallelWorkers   int    // 并行工作线程数（物理备份生效）
 	EnableCompression bool   // 是否启用压缩
+	CompressionLevel  int    // 压缩级别，仅物理备份生效（0=不指定级别; 达梦1-9; Oracle: 1-3=LOW, 4-6=MEDIUM, 7-9=HIGH）
+	Encryption        bool   // 是否启用加密（物理备份，Oracle/达梦支持）
+	EncryptionKey     string // 加密密钥（需配合 Encryption 使用）
+	ArchiveFromLSN    string // 归档备份起始 LSN（仅达梦: 配合 archive 模式使用）
+	ArchiveUntilLSN   string // 归档备份结束 LSN（仅达梦: 配合 archive 模式使用）
 }
 
 // BackupApp 封装备份操作的应用服务。
@@ -33,7 +37,7 @@ func NewBackupApp(cfg *config.Config, notifier *notify.Notifier) *BackupApp {
 
 // Run 执行备份操作。
 func (a *BackupApp) Run(ctx context.Context, dbType string, opts BackupOptions) (*OperationResult, error) {
-	logging.Debug("=== 开始备份 ===")
+	logging.InfoCtx(ctx, "开始备份", "db_type", dbType, "mode", opts.Mode, "type", opts.Type)
 
 	backupModeVal, err := backup.ParseBackupMode(opts.Mode)
 	if err != nil {
@@ -47,27 +51,32 @@ func (a *BackupApp) Run(ctx context.Context, dbType string, opts BackupOptions) 
 		return nil, err
 	}
 
-	backupTargetPath := filepath.Join(a.cfg.BaseBackupDir, dbType, "backup")
-	archiveLogDest := filepath.Join(a.cfg.BaseBackupDir, dbType, "archivelog")
+	if opts.Encryption && opts.EncryptionKey == "" {
+		return nil, fmt.Errorf("启用加密时必须提供 --encryption-key")
+	}
+
+	// typeDir 由 ParseBackupType 保证非空（空值默认为 logical）。
+	typeDir := string(backupTypeVal)
 
 	backupOpts := backup.BackupOptions{
 		Mode:              backupModeVal,
 		Type:              backupTypeVal,
 		ParallelWorkers:   opts.ParallelWorkers,
 		EnableCompression: opts.EnableCompression,
-		TargetPath:        backupTargetPath,
-		ArchiveLogDest:    archiveLogDest,
+		CompressionLevel:  opts.CompressionLevel,
+		Encryption:        opts.Encryption,
+		EncryptionKey:     opts.EncryptionKey,
+		TargetPath:        backupDir(a.cfg.BaseBackupDir, dbType, typeDir),
+		ArchiveLogDest:    archiveLogDir(a.cfg.BaseBackupDir, dbType, typeDir),
+		ArchiveFromLSN:    opts.ArchiveFromLSN,
+		ArchiveUntilLSN:   opts.ArchiveUntilLSN,
 		Timeout:           2 * time.Hour,
 	}
-
-	logging.DebugCtx(ctx, "备份模式与类型", "mode", opts.Mode, "type", opts.Type)
 
 	var result *backup.BackupResult
 	err = withDatabaseBackup(ctx, a.cfg, OpBackup, dbType, func(ctx context.Context, db backup.DatabaseBackup) error {
 		var err error
-		result, err = db.Backup(ctx, backupOpts, func(percent float64, msg string) {
-			logging.DebugCtx(ctx, "备份进度", "percent", fmt.Sprintf("%.2f", percent), "msg", msg)
-		})
+		result, err = db.Backup(ctx, backupOpts, nil)
 		if err != nil {
 			logging.AuditLog(OpBackup, dbType, "failed", err.Error())
 			a.notify(ctx, OpBackup, dbType, "failed", err.Error())
@@ -106,7 +115,7 @@ func (a *BackupApp) Run(ctx context.Context, dbType string, opts BackupOptions) 
 func (a *BackupApp) notify(ctx context.Context, operation, dbType, status, message string) {
 	if a.notifier != nil {
 		if err := a.notifier.Notify(ctx, operation, dbType, status, message); err != nil {
-			logging.Error("发送通知失败", "error", err)
+			logging.ErrorCtx(ctx, "发送通知失败", "error", err)
 		}
 	}
 }

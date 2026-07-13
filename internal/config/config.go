@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -29,15 +30,26 @@ const (
 	dbTypePostgreSQL = "postgresql"
 	dbTypeOracle     = "oracle"
 	dbTypeMSSQL      = "mssql"
+	dbTypeDameng     = "dameng"
 	defaultHost      = "localhost"
 )
 
-// DefaultPorts 各数据库默认端口映射
-var DefaultPorts = map[string]int{
+// ErrDBConfigNotFound 表示指定数据库类型的配置不存在。
+var ErrDBConfigNotFound = errors.New("database config not found")
+
+// defaultPorts 各数据库默认端口映射
+var defaultPorts = map[string]int{
 	dbTypeMySQL:      3306,
 	dbTypePostgreSQL: 5432,
 	dbTypeOracle:     1521,
 	dbTypeMSSQL:      1433,
+	dbTypeDameng:     5236,
+}
+
+// DefaultPort 返回指定数据库类型的默认端口号。
+func DefaultPort(dbType string) (int, bool) {
+	p, ok := defaultPorts[dbType]
+	return p, ok
 }
 
 // SetDefaults 为配置设置默认值
@@ -46,7 +58,7 @@ func (c *DBConfig) SetDefaults() {
 		c.Host = defaultHost
 	}
 	if c.Port == 0 {
-		if defaultPort, exists := DefaultPorts[c.Type]; exists {
+		if defaultPort, exists := DefaultPort(c.Type); exists {
 			c.Port = defaultPort
 		}
 	}
@@ -105,6 +117,19 @@ func LoadConfig(configPath string) (*Config, error) {
 		cfg.Databases[name] = dbCfg
 	}
 
+	// 关键配置项校验
+	if cfg.BaseBackupDir == "" {
+		return nil, errors.New("base_backup_dir 不能为空")
+	}
+	if len(cfg.Databases) == 0 {
+		return nil, errors.New("databases 配置不能为空")
+	}
+	for name, dbCfg := range cfg.Databases {
+		if dbCfg.Type == "" {
+			return nil, fmt.Errorf("数据库 %q 缺少 type 配置", name)
+		}
+	}
+
 	return &cfg, nil
 }
 
@@ -142,25 +167,31 @@ func (cfg *Config) setDefaults(_ string) {
 	if cfg.Log.LogFile != "" && !filepath.IsAbs(cfg.Log.LogFile) {
 		exePath, err := os.Executable()
 		if err != nil {
-			return
+			// fallback to working directory
+			exePath, _ = os.Getwd()
 		}
-		exeDir := filepath.Dir(exePath)
-		cfg.Log.LogFile = filepath.Join(exeDir, cfg.Log.LogFile)
+		if exePath != "" {
+			exeDir := filepath.Dir(exePath)
+			cfg.Log.LogFile = filepath.Join(exeDir, cfg.Log.LogFile)
+		}
 	}
 	if cfg.Log.AuditLogFile != "" && !filepath.IsAbs(cfg.Log.AuditLogFile) {
 		exePath, err := os.Executable()
 		if err != nil {
-			return
+			// fallback to working directory
+			exePath, _ = os.Getwd()
 		}
-		exeDir := filepath.Dir(exePath)
-		cfg.Log.AuditLogFile = filepath.Join(exeDir, cfg.Log.AuditLogFile)
+		if exePath != "" {
+			exeDir := filepath.Dir(exePath)
+			cfg.Log.AuditLogFile = filepath.Join(exeDir, cfg.Log.AuditLogFile)
+		}
 	}
 }
 
 func (cfg *Config) GetDBConfig(dbType string) (*DBConfig, error) {
 	dbCfg, ok := cfg.Databases[dbType]
 	if !ok {
-		return nil, os.ErrNotExist
+		return nil, ErrDBConfigNotFound
 	}
 
 	return &dbCfg, nil

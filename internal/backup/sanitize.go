@@ -14,9 +14,11 @@ import (
 // sanitizeDatabaseName 校验数据库名，防止 SQL 注入和误操作系统库。
 // 采用通用宽松策略：只禁止真正危险的字符，支持 UTF-8 和国际化数据库名（如中文数据库名）。
 // 安全设计原则：
+//   - 禁止路径遍历(..)：防止目录穿越攻击
 //   - 禁止单引号(')：防止 SQL 字符串逃逸注入
 //   - 禁止双引号(")：防止某些数据库的标识符引号注入
 //   - 禁止分号(;)：防止多语句攻击
+//   - 禁止正斜杠(/)：防止路径注入
 //   - 禁止反斜杠(\)：防止路径逃逸
 //   - 禁止空字节(\x00)：防止字符串截断攻击
 //   - 禁止换行符(\n\r)：防止命令注入
@@ -27,8 +29,12 @@ func sanitizeDatabaseName(name string) error {
 		return errors.New("database name cannot be empty")
 	}
 
+	if strings.Contains(name, "..") {
+		return fmt.Errorf("database name cannot contain path traversal sequence: %q", name)
+	}
+
 	// 危险字符黑名单：这些字符可能被用于 SQL 注入或命令注入攻击
-	dangerousChars := "'\";\\\x00\n\r[]"
+	dangerousChars := "'\";/\\\x00\n\r[]"
 	if strings.ContainsAny(name, dangerousChars) {
 		return fmt.Errorf("database name contains dangerous characters: %q", name)
 	}
@@ -199,6 +205,10 @@ func validateDataDirSignature(cleanPath string, dbType string) error {
 		if _, err := os.Stat(filepath.Join(cleanPath, "PG_VERSION")); os.IsNotExist(err) {
 			return fmt.Errorf("DATA_DIR %s does not appear to be a valid PostgreSQL data directory (missing PG_VERSION)", cleanPath)
 		}
+	case DBTypeDameng:
+		if _, err := os.Stat(filepath.Join(cleanPath, "dm.ini")); os.IsNotExist(err) {
+			return fmt.Errorf("DATA_DIR %s does not appear to be a valid Dameng data directory (missing dm.ini)", cleanPath)
+		}
 	default:
 		return fmt.Errorf("unsupported database type for data directory validation: %s", dbType)
 	}
@@ -215,6 +225,115 @@ func mustBeUnderBackupDir(path string, backupDir string) error {
 
 	if !strings.HasPrefix(cleanPath, cleanBackupDir+string(os.PathSeparator)) && cleanPath != cleanBackupDir {
 		return fmt.Errorf("path %s is not within backup directory %s", cleanPath, cleanBackupDir)
+	}
+	return nil
+}
+
+// escapeDamengRMANString 对达梦 disql/dmrman 脚本中的单引号字符串进行转义
+// 达梦 BACKUP/RESTORE 语法使用单引号表示路径字符串，单引号内出现单引号需双写转义
+func escapeDamengRMANString(s string) string {
+	return strings.ReplaceAll(s, `'`, `''`)
+}
+
+// sanitizeSCN 校验 SCN 值，必须为正整数
+func sanitizeSCN(scn string) (int, error) {
+	return sanitizePositiveInt(scn)
+}
+
+// sanitizeSeq 校验归档日志序列号，必须为正整数
+func sanitizeSeq(seq string) (int, error) {
+	return sanitizePositiveInt(seq)
+}
+
+// sanitizeLSN 校验达梦 LSN 值，必须为正整数
+func sanitizeLSN(lsn string) (int, error) {
+	return sanitizePositiveInt(lsn)
+}
+
+// sanitizeDamengBackupPath 校验达梦备份路径，额外拒绝 dmrman 元字符
+func sanitizeDamengBackupPath(path string) error {
+	if path == "" {
+		return errors.New("backup path cannot be empty")
+	}
+	if _, err := sanitizeBackupPath(path); err != nil {
+		return err
+	}
+	if strings.ContainsAny(path, ";\n\r`$") {
+		return fmt.Errorf("backup path contains dmrman meta characters: %q", path)
+	}
+	return nil
+}
+
+var (
+	rmanIdentifiedBySingleQuoteRegex = regexp.MustCompile(`(IDENTIFIED\s+BY\s+')([^']*)(')`)
+	rmanIdentifiedByDoubleQuoteRegex = regexp.MustCompile(`(IDENTIFIED\s+BY\s+")([^"]*)(")`)
+
+	passwordFlagRegex         = regexp.MustCompile(`(--password=)\S+`)
+	mysqlPasswordShortRegex   = regexp.MustCompile(`(-p)([^\s\-]+)`)
+	damengUseridPasswordRegex = regexp.MustCompile(`(USERID=\S+/)(\S+?)(@\S+)`)
+)
+
+// MaskScript 对数据库脚本中的敏感信息进行脱敏。
+// 脱敏规则：
+//   - Oracle RMAN: SET ENCRYPTION IDENTIFIED BY 'xxx' → SET ENCRYPTION IDENTIFIED BY '***'
+//   - 达梦 dmrman: IDENTIFIED BY "xxx" → IDENTIFIED BY "***"
+func MaskScript(script string) string {
+	// Oracle RMAN: SET ENCRYPTION IDENTIFIED BY 'xxx' ONLY
+	script = rmanIdentifiedBySingleQuoteRegex.ReplaceAllString(script, "${1}***${3}")
+
+	// 达梦 dmrman: IDENTIFIED BY "xxx"
+	script = rmanIdentifiedByDoubleQuoteRegex.ReplaceAllString(script, "${1}***${3}")
+
+	return script
+}
+
+// MaskPassword 对命令行字符串中的密码进行脱敏处理。
+// 支持以下密码参数格式的脱敏：
+//   - MySQL: -pSECRET, --password=SECRET
+//   - 达梦: USERID=user/SECRET@host:port
+//   - 通用: --password=SECRET, -pSECRET
+func MaskPassword(cmdStr string) string {
+	// --password=SECRET → --password=***
+	cmdStr = passwordFlagRegex.ReplaceAllString(cmdStr, "${1}***")
+
+	// -pSECRET (后面紧跟密码，无空格) → -p***
+	// 注意：需要避免匹配 -p 后面跟空格的情况（那是没有密码的 -p 参数）
+	cmdStr = mysqlPasswordShortRegex.ReplaceAllString(cmdStr, "${1}***")
+
+	// 达梦 USERID=user/password@host:port → USERID=user/***@host:port
+	cmdStr = damengUseridPasswordRegex.ReplaceAllString(cmdStr, "${1}***${3}")
+
+	return cmdStr
+}
+
+// validateDamengPassword 校验达梦连接密码，拒绝会导致 USERID 格式解析失败的特殊字符。
+// 达梦 USERID 格式为 user/password@host:port，当密码包含 / 或 @ 时解析器无法正确区分分隔符。
+// 安全设计原则：拒绝危险输入而非尝试自动转义，因为转义规则因操作系统不同而不同
+// （Linux: user/'"pass"'@host:port，Windows: user/"""pass"""@host:port），自动转义极易出错。
+func validateDamengPassword(password string) error {
+	if strings.ContainsAny(password, "/@") {
+		return fmt.Errorf("达梦密码包含特殊字符 '/' 或 '@'，将导致 USERID 连接串解析失败，请修改密码")
+	}
+	return nil
+}
+
+// validateRemapSchema 校验达梦 dimp REMAP_SCHEMA 参数格式。
+// 合法格式: source_schema:target_schema（两部分均非空，不含危险字符）。
+func validateRemapSchema(remap string) error {
+	parts := strings.SplitN(remap, ":", 2)
+	if len(parts) != 2 {
+		return fmt.Errorf("格式必须为 source:target，得到: %q", remap)
+	}
+	source := strings.TrimSpace(parts[0])
+	target := strings.TrimSpace(parts[1])
+	if source == "" || target == "" {
+		return fmt.Errorf("源模式和目标模式均不能为空，得到: %q", remap)
+	}
+	if err := sanitizeDatabaseName(source); err != nil {
+		return fmt.Errorf("源模式名无效: %w", err)
+	}
+	if err := sanitizeDatabaseName(target); err != nil {
+		return fmt.Errorf("目标模式名无效: %w", err)
 	}
 	return nil
 }

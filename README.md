@@ -9,6 +9,7 @@
 - Microsoft SQL Server 2025
 - MySQL 8.0
 - PostgreSQL 18
+- Dameng（达梦数据库）
 
 ## 命令参考文档
 
@@ -16,3 +17,4 @@
 - [SQL Server 数据库备份与还原命令手册](docs/mssql.md)
 - [MySQL 数据库备份与还原命令手册](docs/mysql.md)
 - [PostgreSQL 数据库备份与还原命令手册](docs/postgresql.md)
+- [达梦数据库备份与还原命令手册](docs/dameng.md)

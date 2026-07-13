@@ -38,7 +38,8 @@
       "ssl_mode": "",
       "extra": {
         "ORACLE_HOME": "c:\\windows.x64_193000_db_home",
-        "ORACLE_SID": "ORCL"
+        "ORACLE_SID": "ORCL",
+        "AUTO_GHOST_CLEANUP": "true"
       },
       "_extra_help": "ORACLE_HOME: Oracle安装目录(必填); ORACLE_SID: Oracle实例标识(必填)"
     },
@@ -70,6 +71,22 @@
         "SERVICE_NAME": ""
       },
       "_extra_help": "PG_BIN_PATH: PostgreSQL客户端工具目录(可选); DATA_DIR: 数据目录,物理备份还原用(可选); SERVICE_NAME: 系统服务名,物理备份还原用(可选)"
+    },
+    "dameng": {
+      "type": "dameng",
+      "host": "localhost",
+      "port": 5236,
+      "user": "SYSDBA",
+      "password": "Unas123456",
+      "database": "",
+      "ssl_mode": "",
+      "extra": {
+        "DM_HOME": "C:\\dmdbms",
+        "DM_INSTANCE": "DMSERVER",
+        "DM_DATA_DIR": "C:\\dmdbms\\data\\DAMENG",
+        "AUTO_GHOST_CLEANUP": "true"
+      },
+      "_extra_help": "DM_HOME: 达梦安装目录(必填); DM_INSTANCE: 实例名(可选); DM_DATA_DIR: 数据目录,物理备份还原用(可选); 归档目录从 BaseBackupDir 自动推导,无需配置"
     }
   }
 }

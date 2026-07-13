@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -33,8 +33,12 @@ func NewPostgreSQLBackup(config *DBConfig) (*PostgreSQLBackup, error) {
 	pgDumpPath := "pg_dump"
 	pgDumpallPath := "pg_dumpall"
 	pgBasebackupPath := "pg_basebackup"
-	pgVerifyBackupPath := "pg_verifybackup"
+	pgVerifyBackupPath := ""
 	pgCtlPath := "pg_ctl"
+
+	if path, err := exec.LookPath("pg_verifybackup"); err == nil {
+		pgVerifyBackupPath = path
+	}
 
 	if val := config.GetExtraTyped().PGBinPath(); val != "" {
 		psqlPath = fileutil.AddExeExt(filepath.Join(val, "psql"))
@@ -66,7 +70,7 @@ func NewPostgreSQLBackup(config *DBConfig) (*PostgreSQLBackup, error) {
 		pgVerifyBackupPath: pgVerifyBackupPath,
 		pgCtlPath:          pgCtlPath,
 		env:                env,
-		fsManager:          NewFileSystemBackupManager("", "postgresql", nil),
+		fsManager:          NewFileSystemBackupManager(""),
 	}, nil
 }
 
@@ -79,7 +83,7 @@ func (p *PostgreSQLBackup) Backup(ctx context.Context, opts BackupOptions, callb
 	if backupDir == "" {
 		return nil, errors.New("必须通过 -target-path 参数指定备份路径")
 	}
-	if err := os.MkdirAll(backupDir, 0o755); err != nil {
+	if err := fileutil.EnsureDir(backupDir); err != nil {
 		return nil, err
 	}
 
@@ -95,12 +99,12 @@ func (p *PostgreSQLBackup) Backup(ctx context.Context, opts BackupOptions, callb
 
 	case BackupTypeLogical:
 		if len(databases) == 0 {
-			return p.backupAllDatabasesLogical(ctx, backupDir, callback)
+			return p.backupLogicalAll(ctx, backupDir, callback)
 		}
 		if len(databases) == 1 {
-			return p.backupSingleDatabaseLogical(ctx, backupDir, databases[0], callback)
+			return p.backupLogicalSingle(ctx, backupDir, databases[0], callback)
 		}
-		return p.backupMultipleDatabasesLogical(ctx, backupDir, databases, callback)
+		return p.backupLogicalMultiple(ctx, backupDir, databases, callback)
 
 	default:
 		return nil, errors.New("PostgreSQL 仅支持 logical 和 physical 备份类型")
@@ -108,25 +112,9 @@ func (p *PostgreSQLBackup) Backup(ctx context.Context, opts BackupOptions, callb
 }
 
 func (p *PostgreSQLBackup) Restore(ctx context.Context, opts RestoreOptions, callback ProgressCallback) (*RestoreResult, error) {
-	backupIdentifier := opts.BackupIdentifier
-	if backupIdentifier == "" {
-		return nil, errors.New("必须通过 --backup-identifier 参数指定备份文件或目录路径")
-	}
-
-	info, err := os.Stat(backupIdentifier)
+	isDir, err := p.validateRestoreIdentifier(opts.BackupIdentifier, opts.BackupType)
 	if err != nil {
-		return nil, fmt.Errorf("备份文件/目录不存在: %s", backupIdentifier)
-	}
-
-	isDir := info.IsDir()
-	expectedLogical := opts.BackupType == BackupTypeLogical || opts.BackupType == ""
-	expectedPhysical := opts.BackupType == BackupTypePhysical
-
-	if expectedLogical && isDir {
-		return nil, fmt.Errorf("备份类型不匹配：指定为逻辑备份，但提供的是目录: %s", backupIdentifier)
-	}
-	if expectedPhysical && !isDir {
-		return nil, fmt.Errorf("备份类型不匹配：指定为物理备份，但提供的是文件: %s", backupIdentifier)
+		return nil, err
 	}
 
 	if isDir {
@@ -165,8 +153,8 @@ func (p *PostgreSQLBackup) ValidateBackup(ctx context.Context, backupID string, 
 	return p.validatePhysicalBackup(ctx, backupID, opts...)
 }
 
-func registerPostgreSQLDriver() {
-	RegisterDriver(DriverMetadata{
+func registerPostgreSQLDriver() error {
+	return RegisterDriver(DriverMetadata{
 		Name:                 DBTypePostgreSQL,
 		Version:              versionXML,
 		Description:          "PostgreSQL 数据库备份驱动，支持 pg_dump 逻辑备份和 pg_basebackup 物理备份",

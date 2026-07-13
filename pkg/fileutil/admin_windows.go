@@ -7,8 +7,8 @@ import (
 	"unsafe"
 )
 
-// TOKEN_ELEVATION 是 Windows API 中的常量
-const TOKEN_ELEVATION = 20
+// tokenElevation 是 Windows API 中的常量
+const tokenElevation = 20
 
 // checkAdmin 检查当前进程是否以管理员身份运行（Windows）
 func checkAdmin() bool {
@@ -30,7 +30,7 @@ func checkAdmin() bool {
 
 	err = syscall.GetTokenInformation(
 		hToken,
-		TOKEN_ELEVATION,
+		tokenElevation,
 		(*byte)(unsafe.Pointer(&tokenInfo)),
 		tokenInfoSize,
 		&tokenInfoSize,

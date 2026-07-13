@@ -2,9 +2,11 @@ package app
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 
 	"github.com/RealChuan/db-backup-restore/internal/backup"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestOutputWriter_Text_SimpleSuccess(t *testing.T) {
@@ -148,4 +150,43 @@ func TestOutputWriter_Text_DataListOfMaps(t *testing.T) {
 	if got := buf.String(); got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
+}
+
+func TestOutputWriter_Text_DataListOfMaps_SeparatedByBlankLine(t *testing.T) {
+	var buf bytes.Buffer
+	w := &OutputWriter{format: backup.OutputFormatText, writer: &buf}
+	result := &OperationResult{
+		Success:   true,
+		Operation: "list",
+		Message:   "共 3 个备份",
+		Data: map[string]interface{}{
+			"backups": []interface{}{
+				map[string]interface{}{"id": 706, "mode": "full"},
+				map[string]interface{}{"id": 707, "mode": "archive"},
+				map[string]interface{}{"id": 708, "mode": "full"},
+			},
+		},
+	}
+	if err := w.Write(result); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+
+	output := buf.String()
+	lines := strings.Split(output, "\n")
+
+	// 验证 map 列表项之间有空行分隔
+	// "id: 706" 后面的行是 "mode: full"，"mode: full" 后面应是空行
+	// "id: 707" 后面的行是 "mode: archive"，"mode: archive" 后面应是空行
+	// "id: 708" 后面的行是 "mode: full"，"mode: full" 后面不应有空行（最后一个条目）
+	foundSeparation := 0
+	for i := 0; i < len(lines)-1; i++ {
+		trimmed := strings.TrimSpace(lines[i])
+		if (trimmed == "mode: full" && i > 0 && strings.TrimSpace(lines[i-1]) == "id: 706") ||
+			(trimmed == "mode: archive" && i > 0 && strings.TrimSpace(lines[i-1]) == "id: 707") {
+			if strings.TrimSpace(lines[i+1]) == "" {
+				foundSeparation++
+			}
+		}
+	}
+	assert.Equal(t, 2, foundSeparation, "map 列表项之间应有空行分隔")
 }

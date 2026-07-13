@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/RealChuan/db-backup-restore/internal/logging"
-	"github.com/RealChuan/db-backup-restore/pkg/shellexec"
+	"github.com/RealChuan/db-backup-restore/pkg/fileutil"
 )
 
 // OracleBackup 实现 DatabaseBackup 接口，针对 Oracle 数据库
@@ -82,102 +82,26 @@ func NewOracleBackup(config *DBConfig) (*OracleBackup, error) {
 
 // execSQL 执行 SQL 命令（通过 sqlplus）
 func (o *OracleBackup) execSQL(ctx context.Context, sqlStatement string) (string, error) {
-	// 打印 SQL 命令
-	logging.InfoCtx(ctx, "SQL 命令", "sql", sqlStatement)
-
+	logging.InfoCtx(ctx, "执行脚本", "tool", "sqlplus", "script", MaskScript(sqlStatement))
 	cmd := exec.CommandContext(ctx, "sqlplus", "-S", "/", "as", "sysdba")
-	cmd.Env = append(os.Environ(), o.env...)
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return "", err
-	}
-	go func() {
-		defer stdin.Close()
-		fmt.Fprintln(stdin, sqlStatement)
-		fmt.Fprintln(stdin, "EXIT;")
-	}()
-	output, err := shellexec.ExecCommand(cmd)
-	// 打印 SQL 输出，无论成功还是失败
-	logging.InfoCtx(ctx, "SQL 执行输出", "output", output)
-	if err != nil {
-		return output, fmt.Errorf("sqlplus 执行失败: %w", err)
-	}
-	return output, nil
+	sqlInput := sqlStatement + "\nEXIT;\n"
+	return runCapture(ctx, "sqlplus", cmd, withEnv(o.env), withStdin(strings.NewReader(sqlInput)), withGBKConversion())
 }
 
 // execRman 执行 RMAN 命令
 func (o *OracleBackup) execRman(ctx context.Context, rmanScript string) (string, error) {
-	logging.InfoCtx(ctx, "RMAN 命令", "script", rmanScript)
-
+	logging.InfoCtx(ctx, "执行脚本", "tool", "rman", "script", MaskScript(rmanScript))
+	env := make([]string, len(o.env), len(o.env)+1)
+	copy(env, o.env)
+	env = append(env, "NLS_DATE_FORMAT=YYYY-MM-DD HH24:MI:SS")
 	cmd := exec.CommandContext(ctx, "rman", "target", "/")
-	cmd.Env = append(os.Environ(), o.env...)
-	cmd.Env = append(cmd.Env, "NLS_DATE_FORMAT=YYYY-MM-DD HH24:MI:SS")
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return "", err
-	}
-	go func() {
-		defer stdin.Close()
-		fmt.Fprintln(stdin, rmanScript)
-		fmt.Fprintln(stdin, "EXIT;")
-	}()
-	output, err := shellexec.ExecCommand(cmd)
-	logging.InfoCtx(ctx, "RMAN 执行输出", "output", output)
-	if err != nil {
-		return output, fmt.Errorf("rman 执行失败: %w", err)
-	}
-	return output, nil
-}
-
-// isArchiveLogMode 检查数据库是否处于归档模式
-func (o *OracleBackup) isArchiveLogMode(ctx context.Context) (bool, error) {
-	output, err := o.execSQL(ctx, "SELECT LOG_MODE FROM V$DATABASE;")
-	if err != nil {
-		return false, err
-	}
-	match := o.archiveLogModeRegex.FindString(output)
-	return match == "ARCHIVELOG", nil
-}
-
-// EnableArchiveLogMode 将数据库切换到 ARCHIVELOG 模式（需要重启数据库）
-func (o *OracleBackup) EnableArchiveLogMode(ctx context.Context, archiveDest string) error {
-	archived, err := o.isArchiveLogMode(ctx)
-	if err != nil {
-		return err
-	}
-	if archived {
-		return nil
-	}
-
-	// 创建归档日志目录（如果不存在）
-	if archiveDest != "" {
-		if err := os.MkdirAll(archiveDest, 0o755); err != nil {
-			return fmt.Errorf("创建归档日志目录失败: %w", err)
-		}
-	}
-
-	sqlScript := fmt.Sprintf(`
-SHUTDOWN IMMEDIATE;
-STARTUP MOUNT;
-ALTER DATABASE ARCHIVELOG;
-%s
-ALTER DATABASE OPEN;
-`, o.setArchiveDestSQL(archiveDest))
-	output, err := o.execSQL(ctx, sqlScript)
-	if err != nil {
-		return fmt.Errorf("启用归档模式失败: %w, 输出: %s", err, output)
-	}
-	return nil
-}
-
-func (o *OracleBackup) setArchiveDestSQL(dest string) string {
-	if dest == "" {
-		return ""
-	}
-	return fmt.Sprintf("ALTER SYSTEM SET LOG_ARCHIVE_DEST_1='LOCATION=%s' SCOPE=BOTH;", dest)
+	rmanInput := rmanScript + "\nEXIT;\n"
+	return runStreaming(ctx, "rman", cmd, withEnv(env), withStdin(strings.NewReader(rmanInput)), withGBKConversion())
 }
 
 // Backup 执行 Oracle 备份
+//
+//nolint:gocyclo // 复杂度来自多步备份流程中的回调检查和错误分支，重构会降低可读性
 func (o *OracleBackup) Backup(ctx context.Context, opts BackupOptions, callback ProgressCallback) (*BackupResult, error) {
 	startTime := time.Now()
 	result := &BackupResult{
@@ -204,11 +128,17 @@ func (o *OracleBackup) Backup(ctx context.Context, opts BackupOptions, callback 
 			callback(0, "归档模式已启用")
 		}
 	}
+
+	// 幽灵对象清理：在备份前自动执行 RMAN 交叉核对并清理过期/无效记录
+	if o.config.GetExtraTyped().AutoGhostCleanup() {
+		o.crosscheckAndCleanup(ctx)
+	}
+
 	backupDir := opts.TargetPath
 	if backupDir == "" {
-		backupDir = filepath.Join(o.oracleHome, "database")
+		return nil, errors.New("必须通过 -target-path 参数指定备份路径")
 	}
-	if err := os.MkdirAll(backupDir, 0o755); err != nil {
+	if err := fileutil.EnsureDir(backupDir); err != nil {
 		return nil, err
 	}
 
@@ -216,14 +146,17 @@ func (o *OracleBackup) Backup(ctx context.Context, opts BackupOptions, callback 
 		return nil, fmt.Errorf("配置控制文件自动备份格式失败: %w", err)
 	}
 
-	rmanScript := o.buildBackupScript(opts, backupDir)
+	rmanScript, err := o.buildBackupScript(opts, backupDir)
+	if err != nil {
+		return nil, fmt.Errorf("构建备份脚本失败: %w", err)
+	}
 
 	if callback != nil {
 		callback(0, "开始执行 RMAN 备份...")
 	}
 	output, err := o.execRman(ctx, rmanScript)
 	if err != nil {
-		return nil, fmt.Errorf("RMAN 备份失败: %w, 输出: %s", err, output)
+		return nil, fmt.Errorf("RMAN 备份失败: %w", err)
 	}
 	if callback != nil {
 		callback(100, "RMAN 备份完成")
@@ -242,201 +175,56 @@ func (o *OracleBackup) Backup(ctx context.Context, opts BackupOptions, callback 
 	return result, nil
 }
 
-func (o *OracleBackup) configureAutoBackupFormat(ctx context.Context, backupDir string) error {
-	script := fmt.Sprintf("CONFIGURE CONTROLFILE AUTOBACKUP FORMAT FOR DEVICE TYPE DISK TO '%s';",
-		filepath.Join(backupDir, "cf_%F"))
-	_, err := o.execRman(ctx, script)
-	return err
-}
-
-// buildBackupScript 构建 Oracle RMAN 备份脚本
-// 安全设计：
-//   - 对备份路径进行校验和清理，防止路径遍历攻击
-//   - 使用 escapeOracleRMANString 对路径进行转义，防止 RMAN 脚本注入
-//   - 使用 %U 格式生成唯一的备份文件名
-func (o *OracleBackup) buildBackupScript(opts BackupOptions, backupDir string) string {
-	var script strings.Builder
-	script.WriteString("RUN {\n")
-
-	// 安全校验：备份路径
-	cleanDir, err := sanitizeBackupPath(backupDir)
-	if err != nil {
-		cleanDir = filepath.Join(o.oracleHome, "database")
-	}
-
-	// 构建备份文件格式
-	datafileFormat := filepath.Join(cleanDir, "%U")      // 数据文件备份格式
-	cfFormat := filepath.Join(cleanDir, "cf_%U")         // 控制文件备份格式
-	spfileFormat := filepath.Join(cleanDir, "spfile_%U") // 参数文件备份格式
-
-	// 安全转义：防止 RMAN 脚本注入
-	safeDatafileFormat := escapeOracleRMANString(datafileFormat)
-	safeCfFormat := escapeOracleRMANString(cfFormat)
-	safeSpfileFormat := escapeOracleRMANString(spfileFormat)
-
-	if opts.ParallelWorkers > 1 {
-		for i := 1; i <= opts.ParallelWorkers; i++ {
-			fmt.Fprintf(&script, "  ALLOCATE CHANNEL ch%d DEVICE TYPE DISK FORMAT '%s';\n", i, safeDatafileFormat)
-		}
-	} else {
-		fmt.Fprintf(&script, "  ALLOCATE CHANNEL ch1 DEVICE TYPE DISK FORMAT '%s';\n", safeDatafileFormat)
-	}
-
-	if opts.EnableCompression {
-		script.WriteString("  CONFIGURE COMPRESSION ALGORITHM 'MEDIUM';\n")
-	}
-
-	if opts.Encryption {
-		script.WriteString("  CONFIGURE ENCRYPTION FOR DATABASE ON;\n")
-		if opts.EncryptionKey != "" {
-			safeKey := escapeOracleRMANString(opts.EncryptionKey)
-			fmt.Fprintf(&script, "  SET ENCRYPTION IDENTIFIED BY '%s' ONLY;\n", safeKey)
-		}
-	}
-
-	switch opts.Mode {
-	case BackupModeFull:
-		fmt.Fprintf(&script, "  BACKUP DATABASE PLUS ARCHIVELOG DELETE INPUT FORMAT '%s';\n", safeDatafileFormat)
-	case BackupModeIncremental:
-		fmt.Fprintf(&script, "  BACKUP INCREMENTAL LEVEL 1 DATABASE PLUS ARCHIVELOG DELETE INPUT FORMAT '%s';\n", safeDatafileFormat)
-	case BackupModeDifferential:
-		fmt.Fprintf(&script, "  BACKUP INCREMENTAL LEVEL 1 CUMULATIVE DATABASE PLUS ARCHIVELOG DELETE INPUT FORMAT '%s';\n", safeDatafileFormat)
-	default:
-		fmt.Fprintf(&script, "  BACKUP DATABASE PLUS ARCHIVELOG DELETE INPUT FORMAT '%s';\n", safeDatafileFormat)
-	}
-
-	fmt.Fprintf(&script, "  BACKUP CURRENT CONTROLFILE FORMAT '%s';\n", safeCfFormat)
-	fmt.Fprintf(&script, "  BACKUP SPFILE FORMAT '%s';\n", safeSpfileFormat)
-
-	if opts.ParallelWorkers > 1 {
-		for i := 1; i <= opts.ParallelWorkers; i++ {
-			fmt.Fprintf(&script, "  RELEASE CHANNEL ch%d;\n", i)
-		}
-	} else {
-		script.WriteString("  RELEASE CHANNEL ch1;\n")
-	}
-
-	script.WriteString("}\n")
-	script.WriteString("DELETE NOPROMPT OBSOLETE;\n")
-	return script.String()
-}
-
-// parseBackupOutput 扩展返回备份集ID
-func (o *OracleBackup) parseBackupOutput(output, backupDir string) ([]string, int64, string, error) {
-	var files []string
-	var totalSize int64
-	var backupSetKey string
-	scanner := bufio.NewScanner(strings.NewReader(output))
-
-	handleRegexes := o.handleRegexes
-	backupSetKeyRegexes := o.backupSetKeyRegexes
-
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		for _, regex := range handleRegexes {
-			if matches := regex.FindStringSubmatch(line); len(matches) > 1 {
-				handle := matches[1]
-				if !filepath.IsAbs(handle) {
-					handle = filepath.Join(backupDir, filepath.Base(handle))
-				}
-				files = append(files, handle)
-				if info, err := os.Stat(handle); err == nil {
-					totalSize += info.Size()
-				}
-				break
-			}
-		}
-
-		for _, regex := range backupSetKeyRegexes {
-			if matches := regex.FindStringSubmatch(line); len(matches) > 1 && backupSetKey == "" {
-				backupSetKey = matches[1]
-				break
-			}
-		}
-	}
-	return files, totalSize, backupSetKey, nil
-}
-
-// Restore 支持按备份ID或时间点还原
+// Restore 支持按备份ID、时间点、SCN 还原，并支持增量还原、归档还原和控制文件还原模式
 func (o *OracleBackup) Restore(ctx context.Context, opts RestoreOptions, callback ProgressCallback) (*RestoreResult, error) {
 	startTime := time.Now()
 	result := &RestoreResult{}
-	if callback != nil {
-		callback(0, "开始执行 RMAN 还原...")
+
+	restoreMode := opts.RestoreMode
+	if restoreMode == "" {
+		restoreMode = RestoreModeFull
 	}
-	rmanScript := o.buildRestoreScript(opts)
+
+	// 幽灵对象清理：在还原前自动执行 RMAN 交叉核对并清理过期/无效记录
+	o.crosscheckAndCleanup(ctx)
+
+	if callback != nil {
+		callback(0, fmt.Sprintf("开始执行 RMAN %s还原...", restoreMode))
+	}
+
+	var rmanScript string
+	var scriptErr error
+	switch restoreMode {
+	case RestoreModeFull:
+		rmanScript, scriptErr = o.buildFullRestoreScript(opts)
+	case RestoreModeIncremental:
+		rmanScript, scriptErr = o.buildIncrementalRestoreScript(opts)
+	case RestoreModeArchive:
+		rmanScript, scriptErr = o.buildArchiveRestoreScript(opts)
+	case RestoreModeControlFile:
+		rmanScript, scriptErr = o.buildControlFileRestoreScript(opts)
+	default:
+		rmanScript, scriptErr = o.buildFullRestoreScript(opts)
+	}
+	if scriptErr != nil {
+		return nil, fmt.Errorf("构建还原脚本失败: %w", scriptErr)
+	}
 
 	output, err := o.execRman(ctx, rmanScript)
 	if err != nil {
-		return nil, fmt.Errorf("RMAN 还原失败: %w, 输出: %s", err, output)
+		return nil, fmt.Errorf("RMAN 还原失败: %w", err)
 	}
 	if callback != nil {
 		callback(100, "还原完成")
 	}
-	// 尝试从输出中提取还原到的SCN
+
+	// 尝试从输出中提取还原到的 SCN
 	scnRegex := o.scnRegex
 	if matches := scnRegex.FindStringSubmatch(output); len(matches) > 1 {
 		result.RestoredToSCN = matches[1]
 	}
 	result.Duration = time.Since(startTime)
 	return result, nil
-}
-
-// buildRestoreScript 根据选项生成 Oracle RMAN 还原脚本
-// 支持两种还原方式：
-//  1. 按标签还原：使用 BackupIdentifier 指定备份标签
-//  2. 按时间点还原：使用 RecoveryPointInTime 指定恢复时间点
-//
-// 执行流程：
-//  1. SHUTDOWN IMMEDIATE - 立即关闭数据库
-//  2. STARTUP MOUNT - 以挂载模式启动数据库
-//  3. RESTORE DATABASE - 还原数据库
-//  4. RECOVER DATABASE - 恢复数据库（应用归档日志）
-//  5. ALTER DATABASE OPEN - 打开数据库（时间点恢复用 RESETLOGS）
-//
-// 安全设计：
-//   - 使用 escapeOracleRMANString 对标签进行转义，防止脚本注入
-func (o *OracleBackup) buildRestoreScript(opts RestoreOptions) string {
-	var script strings.Builder
-	script.WriteString("RUN {\n")
-
-	// 步骤1：关闭数据库（立即模式）
-	script.WriteString("  SHUTDOWN IMMEDIATE;\n")
-
-	// 步骤2：以挂载模式启动数据库（不打开）
-	script.WriteString("  STARTUP MOUNT;\n")
-
-	// 步骤3：选择还原方式
-	switch {
-	case opts.BackupIdentifier != "":
-		// 按标签还原：使用指定的备份标签
-		safeTag := escapeOracleRMANString(opts.BackupIdentifier)
-		fmt.Fprintf(&script, "  RESTORE DATABASE FROM TAG='%s';\n", safeTag)
-		script.WriteString("  RECOVER DATABASE;\n")
-	case !opts.RecoveryPointInTime.IsZero():
-		// 按时间点还原：恢复到指定时间点
-		timeStr := opts.RecoveryPointInTime.Format("2006-01-02 15:04:05")
-		fmt.Fprintf(&script, "  SET UNTIL TIME \"TO_DATE('%s', 'YYYY-MM-DD HH24:MI:SS')\";\n", timeStr)
-		script.WriteString("  RESTORE DATABASE;\n")
-		script.WriteString("  RECOVER DATABASE;\n")
-	default:
-		// 默认还原：还原最新备份
-		script.WriteString("  RESTORE DATABASE;\n")
-		script.WriteString("  RECOVER DATABASE;\n")
-	}
-
-	// 步骤4：打开数据库
-	if !opts.RecoveryPointInTime.IsZero() {
-		// 时间点恢复需要使用 RESETLOGS 重置日志序列号
-		script.WriteString("  ALTER DATABASE OPEN RESETLOGS;\n")
-	} else {
-		// 普通还原直接打开数据库
-		script.WriteString("  ALTER DATABASE OPEN;\n")
-	}
-
-	script.WriteString("}\n")
-	return script.String()
 }
 
 // ListBackups 列出所有备份（按完成时间排序）
@@ -461,16 +249,18 @@ func (o *OracleBackup) parseBackupList(output string) ([]BackupInfo, error) {
 		if len(matches) >= 14 {
 			completionTime, _ := time.Parse("2006-01-02 15:04:05", matches[6])
 
-			backupType := ""
+			// Oracle RMAN 备份类型码: F=Full, I=Incremental, A=ArchiveLog
+			// Oracle 仅支持物理备份，备份类型统一为 physical
+			var backupMode string
 			switch matches[3] {
 			case "F":
-				backupType = "FULL"
+				backupMode = string(BackupModeFull)
 			case "I":
-				backupType = "INCREMENTAL"
+				backupMode = string(BackupModeIncremental)
 			case "A":
-				backupType = "ARCHIVELOG"
+				backupMode = string(BackupModeArchive)
 			default:
-				backupType = string(matches[3])
+				backupMode = strings.ToLower(string(matches[3]))
 			}
 
 			status := ""
@@ -487,7 +277,8 @@ func (o *OracleBackup) parseBackupList(output string) ([]BackupInfo, error) {
 
 			info := BackupInfo{
 				BackupID:       matches[1],
-				BackupType:     backupType,
+				BackupType:     string(BackupTypePhysical),
+				BackupMode:     backupMode,
 				DeviceType:     matches[5],
 				Status:         status,
 				CompletionTime: completionTime,
@@ -495,6 +286,10 @@ func (o *OracleBackup) parseBackupList(output string) ([]BackupInfo, error) {
 			}
 			backups = append(backups, info)
 		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("读取输出失败: %w", err)
 	}
 	return backups, nil
 }
@@ -507,20 +302,20 @@ func (o *OracleBackup) DeleteBackup(ctx context.Context, identifier string, _ ..
 
 	if targetTime, err = time.Parse(time.RFC3339, identifier); err == nil {
 		timeStr := targetTime.Format("2006-01-02 15:04:05")
-		if _, err := sanitizeDateLiteral(timeStr); err != nil {
-			return fmt.Errorf("invalid date format for delete: %w", err)
+		if _, perr := sanitizeDateLiteral(timeStr); perr != nil {
+			return fmt.Errorf("invalid date format for delete: %w", perr)
 		}
 		rmanCmd = fmt.Sprintf("DELETE NOPROMPT BACKUP COMPLETED BEFORE \"TO_DATE('%s', 'YYYY-MM-DD HH24:MI:SS')\";\n", timeStr)
 	} else if targetTime, err = time.Parse("2006-01-02T15:04:05", identifier); err == nil {
 		timeStr := targetTime.Format("2006-01-02 15:04:05")
-		if _, err := sanitizeDateLiteral(timeStr); err != nil {
-			return fmt.Errorf("invalid date format for delete: %w", err)
+		if _, perr := sanitizeDateLiteral(timeStr); perr != nil {
+			return fmt.Errorf("invalid date format for delete: %w", perr)
 		}
 		rmanCmd = fmt.Sprintf("DELETE NOPROMPT BACKUP COMPLETED BEFORE \"TO_DATE('%s', 'YYYY-MM-DD HH24:MI:SS')\";\n", timeStr)
 	} else {
-		bsid, err := sanitizePositiveInt(identifier)
-		if err != nil {
-			return fmt.Errorf("invalid backup identifier: must be a valid date or positive integer backup set ID")
+		bsid, perr := sanitizePositiveInt(identifier)
+		if perr != nil {
+			return fmt.Errorf("invalid backup identifier: must be a valid date or positive integer backup set ID: %w", perr)
 		}
 		rmanCmd = fmt.Sprintf("DELETE NOPROMPT BACKUPSET %d;\n", bsid)
 	}
@@ -535,6 +330,9 @@ func (o *OracleBackup) DeleteBackup(ctx context.Context, identifier string, _ ..
 func (o *OracleBackup) ValidateBackup(ctx context.Context, backupID string, _ ...BackupOptions) error {
 	script := "RESTORE DATABASE VALIDATE CHECK LOGICAL;"
 	if backupID != "" {
+		if err := sanitizeOracleBackupID(backupID); err != nil {
+			return fmt.Errorf("invalid backup ID: %w", err)
+		}
 		script = fmt.Sprintf("VALIDATE BACKUPSET %s;", backupID)
 	}
 	output, err := o.execRman(ctx, script)
@@ -565,11 +363,6 @@ func (o *OracleBackup) GetBackupInfo(ctx context.Context, backupID string, _ ...
 	info := make(map[string]string)
 	info["raw_output"] = output
 	return info, nil
-}
-
-// Close 释放资源
-func (o *OracleBackup) Close() error {
-	return nil
 }
 
 // RegisterBackup 将指定路径的备份文件注册到备份目录库
@@ -630,12 +423,12 @@ func (o *OracleBackup) DeleteAllBackups(ctx context.Context, _ ...BackupOptions)
 }
 
 // registerOracleDriver 注册 Oracle 驱动
-func registerOracleDriver() {
-	RegisterDriver(DriverMetadata{
+func registerOracleDriver() error {
+	return RegisterDriver(DriverMetadata{
 		Name:                 DBTypeOracle,
 		Version:              versionXML,
-		Description:          "Oracle 数据库备份驱动，支持 RMAN 物理备份",
-		SupportedActions:     []string{backupTypeXML, actionRestore, actionList, actionDelete, "validate", actionInfo, "register", "unregister", "verify-status", "delete-invalid", actionDeleteAll},
+		Description:          "Oracle 数据库备份驱动，支持 RMAN 物理备份/还原（全量、Level 0、差异增量、累积增量、归档、控制文件）",
+		SupportedActions:     []string{backupTypeXML, actionRestore, actionList, actionDelete, actionValidate, actionInfo, "register", "unregister", actionVerifyStatus, "delete-invalid", actionDeleteAll},
 		SupportedBackupTypes: []BackupType{BackupTypePhysical},
 	}, func(config *DBConfig) (DatabaseBackup, error) {
 		return NewOracleBackup(config)

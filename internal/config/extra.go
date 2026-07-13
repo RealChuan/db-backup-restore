@@ -25,6 +25,11 @@ const (
 	extraAuthType          = "AUTH_TYPE"
 	authTypeWindows        = "windows"
 	authTypeSQL            = "sql"
+	extraDamengHome        = "DM_HOME"
+	extraDamengInstance    = "DM_INSTANCE"
+	extraDamengDataDir     = "DM_DATA_DIR"
+	extraAutoGhostCleanup  = "AUTO_GHOST_CLEANUP"
+	extraDefaultTrue       = "true"
 )
 
 // ExtraFieldDef 定义 extra 参数的字段规范。
@@ -121,10 +126,17 @@ var extraSpecs = map[string]ExtraSpec{
 				Required:    true,
 				Description: "Oracle 实例标识（ORACLE_SID 环境变量）",
 			},
+			{
+				Key:         extraAutoGhostCleanup,
+				Required:    false,
+				Description: "是否在备份/还原前自动执行 RMAN 幽灵对象清理（CROSSCHECK + DELETE EXPIRED + DELETE OBSOLETE），默认 true",
+				Default:     extraDefaultTrue,
+			},
 		},
 		Example: `{
   "ORACLE_HOME": "/opt/oracle/product/19c/dbhome_1",
-  "ORACLE_SID": "ORCL"
+  "ORACLE_SID": "ORCL",
+  "AUTO_GHOST_CLEANUP": "true"
 }`,
 	},
 	dbTypeMSSQL: {
@@ -149,6 +161,40 @@ var extraSpecs = map[string]ExtraSpec{
   "AUTH_TYPE": "windows"
 }`,
 	},
+	dbTypeDameng: {
+		DBType:      dbTypeDameng,
+		Description: "达梦数据库额外配置参数",
+		BackupModes: []string{backupModeLogical, backupModePhysical},
+		Fields: []ExtraFieldDef{
+			{
+				Key:         extraDamengHome,
+				Required:    true,
+				Description: "达梦安装目录（DM_HOME 环境变量），dexp/dimp/dmrman 工具依赖此路径",
+			},
+			{
+				Key:         extraDamengInstance,
+				Required:    false,
+				Description: "达梦实例名，多实例场景需指定，默认使用 Database 字段值",
+			},
+			{
+				Key:         extraDamengDataDir,
+				Required:    false,
+				Description: "达梦数据目录路径，物理备份还原时需要（如 /opt/dmdbms/data/DAMENG）",
+			},
+			{
+				Key:         extraAutoGhostCleanup,
+				Required:    false,
+				Description: "是否在物理备份前自动清理归档目录中不属于当前实例的幽灵归档文件，默认 true",
+				Default:     extraDefaultTrue,
+			},
+		},
+		Example: `{
+  "DM_HOME": "/opt/dmdbms",
+  "DM_INSTANCE": "DMSERVER",
+  "DM_DATA_DIR": "/opt/dmdbms/data/DAMENG",
+  "AUTO_GHOST_CLEANUP": "true"
+}`,
+	},
 }
 
 // GetExtraSpec 获取指定数据库类型的 Extra 参数规范。
@@ -158,8 +204,16 @@ func GetExtraSpec(dbType string) (ExtraSpec, bool) {
 }
 
 // GetAllExtraSpecs 获取所有数据库类型的 Extra 参数规范。
+// 返回深拷贝副本，调用方可安全修改而不影响内部状态。
 func GetAllExtraSpecs() map[string]ExtraSpec {
-	return extraSpecs
+	out := make(map[string]ExtraSpec, len(extraSpecs))
+	for k, v := range extraSpecs {
+		fields := make([]ExtraFieldDef, len(v.Fields))
+		copy(fields, v.Fields)
+		v.Fields = fields
+		out[k] = v
+	}
+	return out
 }
 
 // ValidateExtra 校验 extra 参数是否合法，返回校验错误列表。
@@ -222,6 +276,14 @@ func (e *TypedExtra) GetStringDefault(key, defaultVal string) string {
 func (e *TypedExtra) GetBool(key string) bool {
 	v := e.GetString(key)
 	return v == "true" || v == "1" || v == "yes"
+}
+
+// GetBoolDefault 获取布尔类型的 extra 参数，键未设置时返回默认值。
+func (e *TypedExtra) GetBoolDefault(key string, defaultVal bool) bool {
+	if !e.IsSet(key) {
+		return defaultVal
+	}
+	return e.GetBool(key)
 }
 
 // IsSet 检查 extra 参数是否已设置。
@@ -291,6 +353,24 @@ func (e *TypedExtra) IsWindowsAuth() bool {
 	return e.AuthType() == authTypeWindows
 }
 
+// 达梦便捷访问方法
+
+// DamengHome 返回达梦安装目录。
+func (e *TypedExtra) DamengHome() string { return e.GetString(extraDamengHome) }
+
+// DamengInstance 返回达梦实例名。
+func (e *TypedExtra) DamengInstance() string { return e.GetString(extraDamengInstance) }
+
+// DamengDataDir 返回达梦数据目录路径。
+func (e *TypedExtra) DamengDataDir() string { return e.GetString(extraDamengDataDir) }
+
+// 幽灵清理便捷访问方法（Oracle 和达梦共用）
+
+// AutoGhostCleanup 返回是否在备份/还原前自动执行幽灵对象清理，默认 true。
+func (e *TypedExtra) AutoGhostCleanup() bool {
+	return e.GetBoolDefault(extraAutoGhostCleanup, true)
+}
+
 // validKeysString 返回规范中所有有效键名的逗号分隔字符串。
 func validKeysString(spec ExtraSpec) string {
 	keys := make([]string, 0, len(spec.Fields))
@@ -309,7 +389,7 @@ func ExtraHelpMarkdown() string {
 	sb.WriteString("不同数据库类型有不同的额外配置参数（`extra` 字段），以下为各类型的详细说明。\n\n")
 
 	// 按固定顺序输出
-	order := []string{dbTypeMySQL, dbTypePostgreSQL, dbTypeOracle, dbTypeMSSQL}
+	order := []string{dbTypeMySQL, dbTypePostgreSQL, dbTypeOracle, dbTypeMSSQL, dbTypeDameng}
 	for _, dbType := range order {
 		spec, ok := extraSpecs[dbType]
 		if !ok {

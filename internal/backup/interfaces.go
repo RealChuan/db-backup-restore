@@ -59,6 +59,12 @@ type DatabaseLister interface {
 	ListDatabases(ctx context.Context) ([]string, error)
 }
 
+// ArchiveModeManager 归档模式管理接口（仅 Oracle 和达梦支持）
+type ArchiveModeManager interface {
+	EnableArchiveLogMode(ctx context.Context, archiveDest string) error
+	DisableArchiveLogMode(ctx context.Context) error
+}
+
 // DatabaseBackup 完整的数据库备份管理接口
 type DatabaseBackup interface {
 	Backuper

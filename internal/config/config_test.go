@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -108,6 +109,9 @@ func TestGetDBConfig_NotFound(t *testing.T) {
 	_, err := cfg.GetDBConfig("nonexistent")
 	if err == nil {
 		t.Fatal("期望返回错误，但返回了 nil")
+	}
+	if !errors.Is(err, ErrDBConfigNotFound) {
+		t.Errorf("error = %v, want ErrDBConfigNotFound", err)
 	}
 }
 

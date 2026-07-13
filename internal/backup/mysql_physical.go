@@ -4,17 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"time"
 
 	"github.com/RealChuan/db-backup-restore/internal/logging"
 	"github.com/RealChuan/db-backup-restore/pkg/fileutil"
-	"github.com/RealChuan/db-backup-restore/pkg/shellexec"
+	"github.com/RealChuan/db-backup-restore/pkg/svcmgmt"
 )
 
 // isAdmin 检查当前进程是否以管理员身份运行
@@ -40,7 +38,7 @@ func (m *MySQLBackup) backupPhysical(ctx context.Context, backupDir string, call
 
 	backupPath := filepath.Join(backupDir, fmt.Sprintf("mysql_%s_physical", time.Now().Format("20060102_150405")))
 
-	if err := os.MkdirAll(backupPath, 0o755); err != nil {
+	if err := fileutil.EnsureDir(backupPath); err != nil {
 		return nil, fmt.Errorf("创建备份目录失败: %w", err)
 	}
 
@@ -67,7 +65,7 @@ func (m *MySQLBackup) executePhysicalBackup(ctx context.Context, backupPath stri
 		return err
 	}
 
-	logging.Info("检测到 xtrabackup，使用 Percona XtraBackup 进行物理备份")
+	logging.Debug("检测到 xtrabackup，使用 Percona XtraBackup 进行物理备份")
 	return m.execXtrabackup(ctx, xtrabackupPath, backupPath, callback)
 }
 
@@ -98,8 +96,6 @@ func (m *MySQLBackup) getXtrabackupPathOrError() (string, error) {
 
 // execXtrabackup 使用 Percona XtraBackup 执行物理备份
 func (m *MySQLBackup) execXtrabackup(ctx context.Context, xtrabackupPath, backupPath string, callback ProgressCallback) error {
-	logging.Info("使用 Percona XtraBackup 进行物理备份")
-
 	args := []string{
 		"--backup",
 		"--target-dir=" + backupPath,
@@ -116,57 +112,19 @@ func (m *MySQLBackup) execXtrabackup(ctx context.Context, xtrabackupPath, backup
 		callback(20, "正在执行 xtrabackup 备份...")
 	}
 
-	cmdStr := xtrabackupPath + " " + strings.Join(args, " ")
-	logging.LogCommandInfo(cmdStr)
-
 	cmd := exec.CommandContext(ctx, xtrabackupPath, args...)
-
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
+	if _, err := runCapture(ctx, "xtrabackup", cmd); err != nil {
 		return err
-	}
-
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-
-	stderrBytes, err := io.ReadAll(stderr)
-	if err != nil {
-		return fmt.Errorf("读取命令错误输出失败: %w", err)
-	}
-	stderrOutput := string(stderrBytes)
-
-	if err := cmd.Wait(); err != nil {
-		logging.LogCommand(cmdStr, stderrOutput, true)
-		return fmt.Errorf("xtrabackup 执行失败: %w, stderr: %s", err, stderrOutput)
-	}
-
-	if stderrOutput != "" {
-		logging.LogCommand(cmdStr, stderrOutput, false)
 	}
 
 	if callback != nil {
 		callback(80, "xtrabackup 备份完成，准备 prepare...")
 	}
 
-	prepareArgs := []string{
-		"--prepare",
-		"--target-dir=" + backupPath,
-	}
-
-	prepareCmdStr := xtrabackupPath + " " + strings.Join(prepareArgs, " ")
-	logging.LogCommandInfo(prepareCmdStr)
-
+	prepareArgs := []string{"--prepare", "--target-dir=" + backupPath}
 	prepareCmd := exec.CommandContext(ctx, xtrabackupPath, prepareArgs...)
-	prepareOutput, err := shellexec.ExecCommand(prepareCmd)
-	if err != nil {
-		logging.LogCommand(prepareCmdStr, prepareOutput, true)
-		return fmt.Errorf("xtrabackup prepare 失败: %w", err)
-	}
-	logging.LogCommand(prepareCmdStr, prepareOutput, false)
-
-	logging.InfoCtx(ctx, "XtraBackup 物理备份完成", "backup_dir", backupPath)
-	return nil
+	_, err := runCapture(ctx, "xtrabackup-prepare", prepareCmd)
+	return err
 }
 
 // restorePhysical 执行 MySQL 物理还原（还原整个数据库实例）
@@ -216,7 +174,7 @@ func (m *MySQLBackup) restorePhysical(ctx context.Context, opts RestoreOptions, 
 		return nil, err
 	}
 
-	if err := m.stopMySQLService(ctx); err != nil {
+	if err := m.stopService(ctx); err != nil {
 		os.RemoveAll(tempDir)
 		return nil, err
 	}
@@ -225,7 +183,7 @@ func (m *MySQLBackup) restorePhysical(ctx context.Context, opts RestoreOptions, 
 		return nil, err
 	}
 
-	if err := m.setMySQLFilePermissions(datadir); err != nil {
+	if err := m.setFilePermissions(datadir); err != nil {
 		logging.WarnCtx(ctx, "设置文件权限失败", "error", err)
 	}
 
@@ -233,7 +191,7 @@ func (m *MySQLBackup) restorePhysical(ctx context.Context, opts RestoreOptions, 
 		callback(90, "启动 MySQL 服务...")
 	}
 
-	if err := m.startMySQLService(ctx); err != nil {
+	if err := m.startService(ctx); err != nil {
 		return nil, err
 	}
 
@@ -268,7 +226,7 @@ func (m *MySQLBackup) validateRestorePhysicalParams(ctx context.Context, opts Re
 	}
 
 	if err := validateDataDir(datadir, "mysql"); err != nil {
-		return "", "", fmt.Errorf("DATA_DIR validation failed: %w", err)
+		return "", "", fmt.Errorf("DATA_DIR 校验失败: %w", err)
 	}
 
 	return backupDir, datadir, nil
@@ -280,7 +238,7 @@ func (m *MySQLBackup) restorePhysicalPrepare(ctx context.Context, xtrabackupPath
 		callback(20, "创建临时目录...")
 	}
 
-	if err := os.MkdirAll(tempDir, 0o755); err != nil {
+	if err := fileutil.EnsureDir(tempDir); err != nil {
 		return fmt.Errorf("创建临时目录失败: %w", err)
 	}
 
@@ -313,9 +271,9 @@ func (m *MySQLBackup) restorePhysicalSwap(ctx context.Context, datadir, tempDir,
 
 	logging.InfoCtx(ctx, "正在重命名旧数据目录", "from", datadir, "to", oldDir)
 	if err := os.Rename(datadir, oldDir); err != nil {
-		m.startMySQLService(ctx) //nolint:errcheck
+		m.startService(ctx) //nolint:errcheck
 		os.RemoveAll(tempDir)
-		return fmt.Errorf("failed to rename old data dir: %w", err)
+		return fmt.Errorf("重命名旧数据目录失败: %w", err)
 	}
 
 	if callback != nil {
@@ -325,8 +283,8 @@ func (m *MySQLBackup) restorePhysicalSwap(ctx context.Context, datadir, tempDir,
 	logging.InfoCtx(ctx, "正在重命名临时目录", "from", tempDir, "to", datadir)
 	if err := os.Rename(tempDir, datadir); err != nil {
 		os.Rename(oldDir, datadir) //nolint:errcheck
-		m.startMySQLService(ctx)   //nolint:errcheck
-		return fmt.Errorf("failed to rename temp dir to datadir: %w", err)
+		m.startService(ctx)        //nolint:errcheck
+		return fmt.Errorf("重命名临时目录到数据目录失败: %w", err)
 	}
 
 	if callback != nil {
@@ -338,54 +296,23 @@ func (m *MySQLBackup) restorePhysicalSwap(ctx context.Context, datadir, tempDir,
 
 // execXtrabackupRestore 使用 Percona XtraBackup 执行物理还原
 func (m *MySQLBackup) execXtrabackupRestore(ctx context.Context, xtrabackupPath, backupDir, datadir string, _ ProgressCallback) error {
-	logging.Info("使用 Percona XtraBackup 进行物理还原")
-
 	args := []string{
 		"--copy-back",
 		"--src-dir=" + backupDir,
 		"--datadir=" + datadir,
 	}
-
-	cmdStr := xtrabackupPath + " " + strings.Join(args, " ")
-	logging.LogCommandInfo(cmdStr)
-
 	cmd := exec.CommandContext(ctx, xtrabackupPath, args...)
-
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return err
-	}
-
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-
-	stderrBytes, err := io.ReadAll(stderr)
-	if err != nil {
-		return fmt.Errorf("读取命令错误输出失败: %w", err)
-	}
-	stderrOutput := string(stderrBytes)
-
-	if err := cmd.Wait(); err != nil {
-		logging.LogCommand(cmdStr, stderrOutput, true)
-		return fmt.Errorf("xtrabackup --copy-back 执行失败: %w, stderr: %s", err, stderrOutput)
-	}
-
-	if stderrOutput != "" {
-		logging.LogCommand(cmdStr, stderrOutput, false)
-	}
-
-	logging.InfoCtx(ctx, "XtraBackup 物理还原完成", "data_dir", datadir)
-	return nil
+	_, err := runCapture(ctx, "xtrabackup-restore", cmd)
+	return err
 }
 
-// getMySQLServiceName 获取 MySQL 服务名
-func (m *MySQLBackup) getMySQLServiceName(ctx context.Context) string {
+// getServiceName 获取 MySQL 服务名
+func (m *MySQLBackup) getServiceName(ctx context.Context) string {
 	if svc := m.config.GetExtraTyped().ServiceName(); svc != "" {
 		return svc
 	}
 
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == platformWindows {
 		return "MySQL"
 	}
 
@@ -400,56 +327,27 @@ func (m *MySQLBackup) getMySQLServiceName(ctx context.Context) string {
 	return "mysqld"
 }
 
-// stopMySQLService 停止 MySQL 服务
-func (m *MySQLBackup) stopMySQLService(ctx context.Context) error {
-	serviceName := m.getMySQLServiceName(ctx)
-	logging.InfoCtx(ctx, "正在停止 MySQL 服务", "service", serviceName)
-
-	if fileutil.IsWindows() {
-		cmd := exec.CommandContext(ctx, "net", "stop", serviceName)
-		if err := cmd.Run(); err == nil {
-			return nil
-		}
-	} else {
-		cmd := exec.CommandContext(ctx, "systemctl", "stop", serviceName)
-		if err := cmd.Run(); err == nil {
-			return nil
-		}
-		cmd = exec.CommandContext(ctx, "service", serviceName, "stop")
-		if err := cmd.Run(); err == nil {
-			return nil
-		}
+// getServiceConfig 构造 MySQL 服务的 ServiceConfig
+func (m *MySQLBackup) getServiceConfig(ctx context.Context) svcmgmt.ServiceConfig {
+	return svcmgmt.ServiceConfig{
+		ServiceName: m.getServiceName(ctx),
 	}
-
-	return fmt.Errorf("无法停止 MySQL 服务 %s", serviceName)
 }
 
-// startMySQLService 启动 MySQL 服务
-func (m *MySQLBackup) startMySQLService(ctx context.Context) error {
-	serviceName := m.getMySQLServiceName(ctx)
-	logging.InfoCtx(ctx, "正在启动 MySQL 服务", "service", serviceName)
-
-	if fileutil.IsWindows() {
-		cmd := exec.CommandContext(ctx, "net", "start", serviceName)
-		if err := cmd.Run(); err == nil {
-			return nil
-		}
-	} else {
-		cmd := exec.CommandContext(ctx, "systemctl", "start", serviceName)
-		if err := cmd.Run(); err == nil {
-			return nil
-		}
-		cmd = exec.CommandContext(ctx, "service", serviceName, "start")
-		if err := cmd.Run(); err == nil {
-			return nil
-		}
-	}
-
-	return fmt.Errorf("无法启动 MySQL 服务 %s", serviceName)
+// stopService 停止 MySQL 服务
+func (m *MySQLBackup) stopService(ctx context.Context) error {
+	logging.InfoCtx(ctx, "正在停止 MySQL 服务", "service", m.getServiceName(ctx))
+	return svcmgmt.StopService(ctx, m.getServiceConfig(ctx))
 }
 
-// setMySQLFilePermissions 设置 MySQL 文件权限
-func (m *MySQLBackup) setMySQLFilePermissions(datadir string) error {
+// startService 启动 MySQL 服务
+func (m *MySQLBackup) startService(ctx context.Context) error {
+	logging.InfoCtx(ctx, "正在启动 MySQL 服务", "service", m.getServiceName(ctx))
+	return svcmgmt.StartService(ctx, m.getServiceConfig(ctx))
+}
+
+// setFilePermissions 设置 MySQL 文件权限
+func (m *MySQLBackup) setFilePermissions(datadir string) error {
 	return filepath.Walk(datadir, func(path string, _ os.FileInfo, err error) error {
 		if err != nil {
 			return err

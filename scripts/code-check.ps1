@@ -358,11 +358,6 @@ foreach ($file in $goFiles) {
     $content = Get-Content $file.FullName -Raw -ErrorAction SilentlyContinue
     if (-not $content) { continue }
 
-    # 查找 exec.Command( 但不包含 exec.CommandContext 的文件
-    $hasExecCommand = [regex]::Matches($content, '\bexec\.Command\s*\(').Count -gt 0
-    $hasExecCommandContext = [regex]::Matches($content, '\bexec\.CommandContext\s*\(').Count -gt 0
-    $hasOnlyCommandContext = $hasExecCommand -and -not $hasExecCommandContext
-
     # 检查是否有 exec.Command 调用（非 CommandContext）
     $execCommandMatches = [regex]::Matches($content, '\bexec\.Command\s*\(')
     $execCommandCtxMatches = [regex]::Matches($content, '\bexec\.CommandContext\s*\(')

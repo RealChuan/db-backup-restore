@@ -80,10 +80,13 @@ func writeDataEntry(w io.Writer, key string, val interface{}, indent string) {
 			return
 		}
 		fmt.Fprintf(w, "%s%s:\n", indent, key)
-		for _, item := range v {
+		for i, item := range v {
 			switch iv := item.(type) {
 			case map[string]interface{}:
-				// 列表中的 map 项：缩进展平
+				// 列表中的 map 项：缩进展平，条目之间加空行分隔
+				if i > 0 {
+					fmt.Fprintln(w)
+				}
 				writeFlatMapEntries(w, iv, indent+"    ")
 			default:
 				fmt.Fprintf(w, "%s  - %v\n", indent, item)

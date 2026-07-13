@@ -1,20 +1,17 @@
 package backup
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/RealChuan/db-backup-restore/internal/logging"
 	"github.com/RealChuan/db-backup-restore/pkg/fileutil"
-	"github.com/RealChuan/db-backup-restore/pkg/shellexec"
 	"github.com/RealChuan/db-backup-restore/pkg/svcmgmt"
 )
 
@@ -39,7 +36,7 @@ func (p *PostgreSQLBackup) backupPhysical(ctx context.Context, backupDir string,
 
 	backupPath := filepath.Join(backupDir, fmt.Sprintf("postgresql_%s_physical", time.Now().Format("20060102_150405")))
 
-	if err := os.MkdirAll(backupPath, 0o755); err != nil {
+	if err := fileutil.EnsureDir(backupPath); err != nil {
 		return nil, fmt.Errorf("创建备份目录失败: %w", err)
 	}
 
@@ -66,7 +63,6 @@ func (p *PostgreSQLBackup) executePhysicalBackup(ctx context.Context, backupPath
 		return err
 	}
 
-	logging.Info("检测到 pg_basebackup，使用 PostgreSQL 基础备份进行物理备份")
 	return p.execPgBasebackup(ctx, pgBasebackupPath, backupPath, callback)
 }
 
@@ -94,8 +90,6 @@ func (p *PostgreSQLBackup) getPgBasebackupPathOrError() (string, error) {
 
 // execPgBasebackup 使用 pg_basebackup 执行物理备份
 func (p *PostgreSQLBackup) execPgBasebackup(ctx context.Context, pgBasebackupPath, backupPath string, callback ProgressCallback) error {
-	logging.Info("使用 pg_basebackup 进行物理备份")
-
 	args := []string{
 		"-D", backupPath,
 		"-X", "stream",
@@ -105,38 +99,9 @@ func (p *PostgreSQLBackup) execPgBasebackup(ctx context.Context, pgBasebackupPat
 		callback(20, "正在执行 pg_basebackup 备份...")
 	}
 
-	cmdStr := pgBasebackupPath + " " + strings.Join(args, " ")
-	logging.LogCommandInfo(cmdStr)
-
 	cmd := exec.CommandContext(ctx, pgBasebackupPath, args...)
-	cmd.Env = append(os.Environ(), p.env...)
-
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return err
-	}
-
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-
-	stderrBytes, err := io.ReadAll(stderr)
-	if err != nil {
-		return fmt.Errorf("读取命令错误输出失败: %w", err)
-	}
-	stderrOutput := string(stderrBytes)
-
-	if err := cmd.Wait(); err != nil {
-		logging.LogCommand(cmdStr, stderrOutput, true)
-		return fmt.Errorf("pg_basebackup 执行失败: %w, stderr: %s", err, stderrOutput)
-	}
-
-	if stderrOutput != "" {
-		logging.LogCommand(cmdStr, stderrOutput, false)
-	}
-
-	logging.InfoCtx(ctx, "pg_basebackup 物理备份完成", "backup_dir", backupPath)
-	return nil
+	_, err := runCapture(ctx, "pg_basebackup", cmd, withEnv(p.env))
+	return err
 }
 
 // restorePhysical 执行 PostgreSQL 物理还原（还原整个数据库实例）
@@ -148,8 +113,8 @@ func (p *PostgreSQLBackup) execPgBasebackup(ctx context.Context, pgBasebackupPat
 //
 // 执行流程（原子操作保证数据安全）：
 //  1. 权限检查 → 2. 参数校验 → 3. 创建临时目录 → 4. 复制备份到临时目录
-//  5. 验证临时目录 → 6. 停止服务 → 7. 重命名旧目录 → 8. 切换新目录
-//  9. 设置权限 → 10. 启动服务 → 11. 输出清理提示
+//  5. 验证临时目录 → 6. 验证备份完整性 → 7. 停止服务 → 8. 重命名旧目录 → 9. 切换新目录
+//  10. 设置权限 → 11. 启动服务 → 12. 输出清理提示
 //
 // 关键设计说明：
 //   - 临时目录策略：先将备份复制到 {datadir}_new_{timestamp}，验证通过后再切换
@@ -180,7 +145,12 @@ func (p *PostgreSQLBackup) restorePhysical(ctx context.Context, opts RestoreOpti
 		return nil, err
 	}
 
-	if err := p.stopPostgreSQLService(ctx); err != nil {
+	if err := p.validatePhysicalBackup(ctx, tempDir); err != nil {
+		os.RemoveAll(tempDir)
+		return nil, fmt.Errorf("备份验证失败: %w", err)
+	}
+
+	if err := p.stopService(ctx); err != nil {
 		os.RemoveAll(tempDir)
 		return nil, err
 	}
@@ -189,7 +159,7 @@ func (p *PostgreSQLBackup) restorePhysical(ctx context.Context, opts RestoreOpti
 		return nil, err
 	}
 
-	if err := p.setPostgreSQLFilePermissions(ctx, datadir); err != nil {
+	if err := p.setFilePermissions(ctx, datadir); err != nil {
 		logging.WarnCtx(ctx, "设置文件权限失败", "error", err)
 	}
 
@@ -197,20 +167,8 @@ func (p *PostgreSQLBackup) restorePhysical(ctx context.Context, opts RestoreOpti
 		callback(90, "准备启动 PostgreSQL 服务...")
 	}
 
-	if err := p.startPostgreSQLService(ctx); err != nil {
+	if err := p.startService(ctx); err != nil {
 		return nil, err
-	}
-
-	if err := p.waitForPostgreSQL(ctx, datadir); err != nil {
-		return nil, fmt.Errorf("PostgreSQL 启动后等待就绪失败: %w", err)
-	}
-
-	if callback != nil {
-		callback(95, "验证备份...")
-	}
-
-	if err := p.validatePhysicalBackup(ctx, datadir); err != nil {
-		logging.WarnCtx(ctx, "备份验证失败", "error", err)
 	}
 
 	if callback != nil {
@@ -244,7 +202,7 @@ func (p *PostgreSQLBackup) validateRestorePhysicalParams(ctx context.Context, op
 	}
 
 	if err := validateDataDir(datadir, "postgresql"); err != nil {
-		return "", "", fmt.Errorf("DATA_DIR validation failed: %w", err)
+		return "", "", fmt.Errorf("DATA_DIR 校验失败: %w", err)
 	}
 
 	return backupDir, datadir, nil
@@ -256,7 +214,7 @@ func (p *PostgreSQLBackup) restorePhysicalPrepare(_ context.Context, backupDir, 
 		callback(20, "创建临时目录...")
 	}
 
-	if err := os.MkdirAll(tempDir, 0o755); err != nil {
+	if err := fileutil.EnsureDir(tempDir); err != nil {
 		return fmt.Errorf("创建临时目录失败: %w", err)
 	}
 
@@ -281,26 +239,17 @@ func (p *PostgreSQLBackup) restorePhysicalPrepare(_ context.Context, backupDir, 
 	return nil
 }
 
-// restorePhysicalSwap 停止服务后交换数据目录
+// restorePhysicalSwap 交换数据目录（服务已在外层停止）
 func (p *PostgreSQLBackup) restorePhysicalSwap(ctx context.Context, datadir, tempDir, oldDir string, callback ProgressCallback) error {
 	if callback != nil {
-		callback(60, "停止 PostgreSQL 服务...")
-	}
-
-	if err := p.stopPostgreSQLService(ctx); err != nil {
-		os.RemoveAll(tempDir)
-		return err
-	}
-
-	if callback != nil {
-		callback(70, "重命名旧数据目录...")
+		callback(60, "重命名旧数据目录...")
 	}
 
 	logging.InfoCtx(ctx, "正在重命名旧数据目录", "from", datadir, "to", oldDir)
 	if err := os.Rename(datadir, oldDir); err != nil {
-		p.startPostgreSQLService(ctx) //nolint:errcheck
+		p.startService(ctx) //nolint:errcheck
 		os.RemoveAll(tempDir)
-		return fmt.Errorf("failed to rename old data dir: %w", err)
+		return fmt.Errorf("重命名旧数据目录失败: %w", err)
 	}
 
 	if callback != nil {
@@ -309,9 +258,9 @@ func (p *PostgreSQLBackup) restorePhysicalSwap(ctx context.Context, datadir, tem
 
 	logging.InfoCtx(ctx, "正在重命名临时目录", "from", tempDir, "to", datadir)
 	if err := os.Rename(tempDir, datadir); err != nil {
-		os.Rename(oldDir, datadir)    //nolint:errcheck
-		p.startPostgreSQLService(ctx) //nolint:errcheck
-		return fmt.Errorf("failed to rename temp dir to datadir: %w", err)
+		os.Rename(oldDir, datadir) //nolint:errcheck
+		p.startService(ctx)        //nolint:errcheck
+		return fmt.Errorf("重命名临时目录到数据目录失败: %w", err)
 	}
 
 	if callback != nil {
@@ -321,72 +270,55 @@ func (p *PostgreSQLBackup) restorePhysicalSwap(ctx context.Context, datadir, tem
 	return nil
 }
 
-// stopPostgreSQLService 停止 PostgreSQL 服务
-func (p *PostgreSQLBackup) stopPostgreSQLService(ctx context.Context) error {
+// getServiceConfig 构造 PostgreSQL 服务的 ServiceConfig
+// Linux 使用 pg_ctl 自定义命令，Windows 使用系统服务
+func (p *PostgreSQLBackup) getServiceConfig() svcmgmt.ServiceConfig {
 	datadir := p.config.GetExtraTyped().DataDir()
-	if datadir == "" {
-		return errors.New("未配置 PostgreSQL 数据目录，请在配置文件中设置 Extra[\"DATA_DIR\"]")
+
+	if !svcmgmt.IsWindows() && datadir != "" {
+		// Linux: 使用 pg_ctl 自定义命令
+		return svcmgmt.ServiceConfig{
+			ServiceName:  p.config.GetExtraTyped().ServiceName(),
+			StopCommand:  p.pgCtlPath,
+			StopArgs:     []string{"stop", "-D", datadir},
+			StartCommand: p.pgCtlPath,
+			StartArgs:    []string{"start", "-D", datadir},
+			Env:          p.env,
+		}
 	}
 
-	args := []string{"stop", "-D", datadir}
-	cmdStr := p.pgCtlPath + " " + strings.Join(args, " ")
-	logging.LogCommandInfo(cmdStr)
-
-	cmd := exec.CommandContext(ctx, p.pgCtlPath, args...)
-	cmd.Env = append(os.Environ(), p.env...)
-
-	output, err := shellexec.ExecCommand(cmd)
-	if err != nil {
-		logging.LogCommand(cmdStr, output, true)
-		return fmt.Errorf("pg_ctl stop 执行失败: %w, output: %s", err, output)
-	}
-	logging.LogCommand(cmdStr, output, false)
-	return nil
-}
-
-// startPostgreSQLService 启动 PostgreSQL 服务
-func (p *PostgreSQLBackup) startPostgreSQLService(ctx context.Context) error {
-	datadir := p.config.GetExtraTyped().DataDir()
-	if datadir == "" {
-		return errors.New("未配置 PostgreSQL 数据目录，请在配置文件中设置 Extra[\"DATA_DIR\"]")
-	}
-
-	if fileutil.IsWindows() {
-		return p.startPostgreSQLServiceWindows(ctx)
-	}
-
-	args := []string{"start", "-D", datadir}
-	cmdStr := p.pgCtlPath + " " + strings.Join(args, " ")
-	logging.LogCommandInfo(cmdStr)
-
-	var stdout, stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, p.pgCtlPath, args...)
-	cmd.Env = append(os.Environ(), p.env...)
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("pg_ctl start 执行失败: %w, stdout: %s, stderr: %s", err, stdout.String(), stderr.String())
-	}
-
-	if err := p.waitForPostgreSQL(ctx, datadir); err != nil {
-		return fmt.Errorf("等待 PostgreSQL 启动失败: %w", err)
-	}
-
-	return nil
-}
-
-// startPostgreSQLServiceWindows 在 Windows 上使用服务方式启动 PostgreSQL
-func (p *PostgreSQLBackup) startPostgreSQLServiceWindows(ctx context.Context) error {
+	// Windows: 使用系统服务
 	serviceName := p.config.GetExtraTyped().ServiceName()
-	if serviceName == "" {
-		serviceName = "postgresql-x64-18"
+	// Windows 下必须显式配置 SERVICE_NAME，不再提供默认值；
+	// 若为空，后续 stopService/startService 会返回明确的错误提示。
+	return svcmgmt.ServiceConfig{
+		ServiceName: serviceName,
 	}
+}
 
-	if err := svcmgmt.StartWindowsService(ctx, serviceName); err != nil {
-		return fmt.Errorf("无法启动 PostgreSQL 服务 [%s]: %w", serviceName, err)
+// stopService 停止 PostgreSQL 服务
+func (p *PostgreSQLBackup) stopService(ctx context.Context) error {
+	cfg := p.getServiceConfig()
+	if svcmgmt.IsWindows() && cfg.ServiceName == "" {
+		return errors.New("windows 下必须通过 Extra[\"SERVICE_NAME\"] 显式配置 PostgreSQL 服务名称")
 	}
-	return nil
+	logging.InfoCtx(ctx, "正在停止 PostgreSQL 服务")
+	return svcmgmt.StopService(ctx, cfg)
+}
+
+// startService 启动 PostgreSQL 服务
+func (p *PostgreSQLBackup) startService(ctx context.Context) error {
+	cfg := p.getServiceConfig()
+	if svcmgmt.IsWindows() && cfg.ServiceName == "" {
+		return errors.New("windows 下必须通过 Extra[\"SERVICE_NAME\"] 显式配置 PostgreSQL 服务名称")
+	}
+	logging.InfoCtx(ctx, "正在启动 PostgreSQL 服务")
+	if err := svcmgmt.StartService(ctx, cfg); err != nil {
+		return err
+	}
+	// 启动后等待就绪
+	datadir := p.config.GetExtraTyped().DataDir()
+	return p.waitForPostgreSQL(ctx, datadir)
 }
 
 // waitForPostgreSQL 等待 PostgreSQL 启动完成
@@ -399,37 +331,39 @@ func (p *PostgreSQLBackup) waitForPostgreSQL(ctx context.Context, datadir string
 			logging.Info("PostgreSQL 服务已启动")
 			return nil
 		}
-		time.Sleep(1 * time.Second)
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("等待 PostgreSQL 启动被取消: %w", ctx.Err())
+		case <-time.After(1 * time.Second):
+		}
 	}
 	return errors.New("PostgreSQL 启动超时")
 }
 
-// setPostgreSQLFilePermissions 设置 PostgreSQL 文件权限
-func (p *PostgreSQLBackup) setPostgreSQLFilePermissions(ctx context.Context, datadir string) error {
+// setFilePermissions 设置 PostgreSQL 文件权限
+func (p *PostgreSQLBackup) setFilePermissions(ctx context.Context, datadir string) error {
 	if fileutil.IsWindows() {
-		return p.setPostgreSQLFilePermissionsWindows(ctx, datadir)
+		return p.setFilePermissionsWindows(ctx, datadir)
 	}
-	return filepath.Walk(datadir, func(path string, _ os.FileInfo, err error) error {
+	return filepath.WalkDir(datadir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		return os.Chmod(path, 0o755)
+		if d.IsDir() {
+			return os.Chmod(path, 0o700)
+		}
+		return os.Chmod(path, 0o600)
 	})
 }
 
-// setPostgreSQLFilePermissionsWindows 在 Windows 上设置 PostgreSQL 文件权限
-func (p *PostgreSQLBackup) setPostgreSQLFilePermissionsWindows(ctx context.Context, datadir string) error {
+// setFilePermissionsWindows 在 Windows 上设置 PostgreSQL 文件权限
+func (p *PostgreSQLBackup) setFilePermissionsWindows(ctx context.Context, datadir string) error {
 	args := []string{"/c", "icacls", datadir, "/grant", "Everyone:(OI)(CI)F", "/T"}
-	cmdStr := "cmd " + strings.Join(args, " ")
-	logging.LogCommandInfo(cmdStr)
-
 	cmd := exec.CommandContext(ctx, "cmd", args...)
-	output, err := cmd.CombinedOutput()
+	_, err := runCapture(ctx, "icacls", cmd)
 	if err != nil {
-		logging.LogCommand(cmdStr, string(output), true)
-		return fmt.Errorf("设置文件权限失败: %w, output: %s", err, string(output))
+		return fmt.Errorf("设置文件权限失败: %w", err)
 	}
-	logging.LogCommand(cmdStr, string(output), false)
 	return nil
 }
 
@@ -463,39 +397,10 @@ func (p *PostgreSQLBackup) validatePhysicalBackup(ctx context.Context, backupID 
 		return err
 	}
 
-	logging.InfoCtx(ctx, "使用 pg_verifybackup 验证备份", "backup_dir", backupPath)
+	logging.DebugCtx(ctx, "使用 pg_verifybackup 验证备份", "backup_dir", backupPath)
 
 	args := []string{backupPath}
-	cmdStr := pgVerifyBackupPath + " " + strings.Join(args, " ")
-	logging.LogCommandInfo(cmdStr)
-
 	cmd := exec.CommandContext(ctx, pgVerifyBackupPath, args...)
-	cmd.Env = append(os.Environ(), p.env...)
-
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return err
-	}
-
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-
-	stderrBytes, err := io.ReadAll(stderr)
-	if err != nil {
-		return fmt.Errorf("读取命令错误输出失败: %w", err)
-	}
-	stderrOutput := string(stderrBytes)
-
-	if err := cmd.Wait(); err != nil {
-		logging.LogCommand(cmdStr, stderrOutput, true)
-		return fmt.Errorf("pg_verifybackup 执行失败: %w, stderr: %s", err, stderrOutput)
-	}
-
-	if stderrOutput != "" {
-		logging.LogCommand(cmdStr, stderrOutput, false)
-	}
-
-	logging.InfoCtx(ctx, "pg_verifybackup 验证完成", "backup_dir", backupPath)
-	return nil
+	_, err = runCapture(ctx, "pg_verifybackup", cmd, withEnv(p.env))
+	return err
 }

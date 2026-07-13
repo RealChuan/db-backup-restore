@@ -2,6 +2,7 @@ package backup
 
 import (
 	"errors"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -33,24 +34,25 @@ var driverRegistry = struct {
 }
 
 // RegisterDriver 注册数据库备份驱动
-func RegisterDriver(metadata DriverMetadata, factory DriverFactory) {
+func RegisterDriver(metadata DriverMetadata, factory DriverFactory) error {
 	if factory == nil {
-		panic("backup: RegisterDriver called with nil factory")
+		return errors.New("backup: RegisterDriver called with nil factory")
 	}
 	if metadata.Name == "" {
-		panic("backup: RegisterDriver called with empty driver name")
+		return errors.New("backup: RegisterDriver called with empty driver name")
 	}
 
 	driverRegistry.Lock()
 	defer driverRegistry.Unlock()
 
 	if _, exists := driverRegistry.drivers[metadata.Name]; exists {
-		panic("backup: RegisterDriver called twice for driver " + metadata.Name)
+		return errors.New("backup: RegisterDriver called twice for driver " + metadata.Name)
 	}
 	driverRegistry.drivers[metadata.Name] = driverInfo{
 		metadata: metadata,
 		factory:  factory,
 	}
+	return nil
 }
 
 // UnregisterDriver 注销数据库备份驱动
@@ -84,6 +86,7 @@ func ListDrivers() []string {
 	for name := range driverRegistry.drivers {
 		names = append(names, name)
 	}
+	sort.Strings(names)
 	return names
 }
 
@@ -95,6 +98,9 @@ func ListDriverMetadata() []DriverMetadata {
 	for _, info := range driverRegistry.drivers {
 		metadataList = append(metadataList, info.metadata)
 	}
+	sort.Slice(metadataList, func(i, j int) bool {
+		return metadataList[i].Name < metadataList[j].Name
+	})
 	return metadataList
 }
 

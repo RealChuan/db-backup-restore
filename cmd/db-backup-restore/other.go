@@ -28,6 +28,7 @@ var (
 	infoID           string
 	registerPath     string
 	unregisterID     string
+	listBackupType   string
 )
 
 var listCmd = &cobra.Command{
@@ -185,7 +186,47 @@ var deleteAllCmd = &cobra.Command{
 	},
 }
 
+var archiveDest string
+
+var enableArchiveCmd = &cobra.Command{
+	Use:   "enable-archive",
+	Short: "启用归档模式",
+	Long: `启用数据库的归档模式（ARCHIVELOG）。
+
+注意: 仅 Oracle 和达梦支持此操作。开启归档模式是执行联机物理备份的前提。
+
+使用示例:
+  # 启用达梦归档模式（指定归档目录）
+  db-backup-restore enable-archive -c config.json -t dameng --archive-dest c:/work/database_backup/dameng/physical/archivelog
+
+  # 启用 Oracle 归档模式（使用默认归档目录）
+  db-backup-restore enable-archive -c config.json -t oracle`,
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		return runEnableArchive(cmd.Context())
+	},
+}
+
+var disableArchiveCmd = &cobra.Command{
+	Use:   "disable-archive",
+	Short: "关闭归档模式",
+	Long: `关闭数据库的归档模式（切换为 NOARCHIVELOG）。
+
+注意: 仅 Oracle 和达梦支持此操作。关闭归档模式后将无法执行联机物理备份。
+
+使用示例:
+  # 关闭达梦归档模式
+  db-backup-restore disable-archive -c config.json -t dameng
+
+  # 关闭 Oracle 归档模式
+  db-backup-restore disable-archive -c config.json -t oracle`,
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		return runDisableArchive(cmd.Context())
+	},
+}
+
 func init() {
+	listCmd.Flags().StringVar(&listBackupType, "backup-type", "", "备份类型筛选: logical, physical（为空则列出所有类型）")
+
 	deleteCmd.Flags().StringVar(&deleteIdentifier, "delete-identifier", "", "删除备份的标识符")
 	if err := deleteCmd.MarkFlagRequired("delete-identifier"); err != nil {
 		log.Fatal(err)
@@ -222,6 +263,10 @@ func init() {
 	rootCmd.AddCommand(verifyStatusCmd)
 	rootCmd.AddCommand(deleteInvalidCmd)
 	rootCmd.AddCommand(deleteAllCmd)
+
+	enableArchiveCmd.Flags().StringVar(&archiveDest, "archive-dest", "", "归档日志存储目录路径（为空则使用数据库默认配置）")
+	rootCmd.AddCommand(enableArchiveCmd)
+	rootCmd.AddCommand(disableArchiveCmd)
 }
 
 func runListDrivers() error {
@@ -248,7 +293,7 @@ func runListDrivers() error {
 
 	result := &app.OperationResult{
 		Success:   true,
-		Operation: "list_drivers",
+		Operation: app.OpListDrivers,
 		Message:   fmt.Sprintf("共 %d 个驱动", len(drivers)),
 		Data:      map[string]interface{}{"drivers": items},
 	}
@@ -256,7 +301,7 @@ func runListDrivers() error {
 }
 
 func runListBackups(ctx context.Context) error {
-	result, err := app.NewManagerApp(appConfig).ListBackups(ctx, databaseType)
+	result, err := app.NewManagerApp(appConfig).ListBackups(ctx, databaseType, listBackupType)
 	return outputResult(result, err, "list")
 }
 
@@ -303,4 +348,14 @@ func runDeleteInvalidBackups(ctx context.Context) error {
 func runDeleteAllBackups(ctx context.Context) error {
 	result, err := app.NewManagerApp(appConfig).DeleteAllBackups(ctx, databaseType)
 	return outputResult(result, err, "delete_all")
+}
+
+func runEnableArchive(ctx context.Context) error {
+	result, err := app.NewManagerApp(appConfig).EnableArchiveLog(ctx, databaseType, archiveDest)
+	return outputResult(result, err, "enable_archive")
+}
+
+func runDisableArchive(ctx context.Context) error {
+	result, err := app.NewManagerApp(appConfig).DisableArchiveLog(ctx, databaseType)
+	return outputResult(result, err, "disable_archive")
 }

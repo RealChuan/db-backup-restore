@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/RealChuan/db-backup-restore/internal/logging"
@@ -65,4 +66,35 @@ func HandleError(err error) {
 	} else {
 		logging.Error("未知错误", "error", err)
 	}
+}
+
+// CommandError 命令执行失败错误，携带完整的诊断信息。
+// 调用方可通过 errors.As 提取结构化字段，无需解析错误消息字符串。
+type CommandError struct {
+	Tool    string // 工具名: mysqldump / pg_dump / dexp / rman / sqlcmd
+	Cmd     string // 完整命令（已脱敏）
+	Stdout  string // 标准输出内容（RMAN 等工具将错误诊断输出到 stdout）
+	Stderr  string // 标准错误输出
+	Message string // 人类可读摘要
+	Cause   error  // 原始错误
+}
+
+// Error 返回人类可读的错误描述，包含所有诊断信息
+func (e *CommandError) Error() string {
+	var parts []string
+	if e.Stderr != "" {
+		parts = append(parts, fmt.Sprintf("stderr: %s", e.Stderr))
+	}
+	if e.Stdout != "" {
+		parts = append(parts, fmt.Sprintf("stdout: %s", e.Stdout))
+	}
+	if len(parts) > 0 {
+		return fmt.Sprintf("%s: %s, %s", e.Tool, e.Message, strings.Join(parts, ", "))
+	}
+	return fmt.Sprintf("%s: %s", e.Tool, e.Message)
+}
+
+// Unwrap 返回底层 Cause，支持 errors.Is/As 链式查找
+func (e *CommandError) Unwrap() error {
+	return e.Cause
 }

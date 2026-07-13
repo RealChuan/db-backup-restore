@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/RealChuan/db-backup-restore/internal/backup"
@@ -42,28 +41,63 @@ func withDatabaseBackup(ctx context.Context, cfg *config.Config, operation, dbTy
 	return fn(ctx, db)
 }
 
-// ListBackups 列出指定数据库的所有备份。
-func (m *ManagerApp) ListBackups(ctx context.Context, dbType string) (*OperationResult, error) {
-	logging.Debug("=== 列出所有备份 ===")
+// ListBackups 列出指定数据库的备份，支持按备份类型筛选。
+// backupType 为空时列出所有类型（仅限该驱动支持的类型），为 "logical" 或 "physical" 时只列出对应类型。
+func (m *ManagerApp) ListBackups(ctx context.Context, dbType, backupType string) (*OperationResult, error) {
+	logging.DebugCtx(ctx, "=== 列出所有备份 ===", "backup_type", backupType)
 
-	backupTarget := filepath.Join(m.cfg.BaseBackupDir, dbType, "backup")
-	backupOpts := backup.BackupOptions{TargetPath: backupTarget}
+	// 获取驱动元数据，用于确定支持的备份类型
+	metadata, ok := backup.GetDriverMetadata(dbType)
+	if !ok {
+		return nil, fmt.Errorf("未找到数据库驱动: %s", dbType)
+	}
 
-	var backups []backup.BackupInfo
-	err := withDatabaseBackup(ctx, m.cfg, OpList, dbType, func(ctx context.Context, db backup.DatabaseBackup) error {
-		var err error
-		backups, err = db.ListBackups(ctx, backupOpts)
-		if err != nil {
-			return fmt.Errorf("列出备份失败: %w", err)
+	// 确定要搜索的类型目录
+	var typeDirs []string
+	if backupType != "" {
+		// 验证用户指定的备份类型是否被该驱动支持
+		if !isBackupTypeSupported(metadata, backupType) {
+			return &OperationResult{
+				Success:   true,
+				Operation: OpList,
+				DBType:    dbType,
+				Message:   fmt.Sprintf("%s 不支持 %s 备份，支持的类型: %v", dbType, backupType, formatSupportedTypes(metadata.SupportedBackupTypes)),
+				Data:      map[string]interface{}{},
+			}, nil
 		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
+		typeDirs = []string{backupType}
+	} else {
+		// 根据驱动支持的备份类型确定搜索范围，避免对不支持的类型发起无效查询
+		typeDirs = make([]string, 0, len(metadata.SupportedBackupTypes))
+		for _, bt := range metadata.SupportedBackupTypes {
+			typeDirs = append(typeDirs, string(bt))
+		}
+	}
+
+	var allBackups []backup.BackupInfo
+
+	for _, typeDir := range typeDirs {
+		backupOpts := backup.BackupOptions{TargetPath: backupDir(m.cfg.BaseBackupDir, dbType, typeDir)}
+
+		err := withDatabaseBackup(ctx, m.cfg, OpList, dbType, func(ctx context.Context, db backup.DatabaseBackup) error {
+			backups, err := db.ListBackups(ctx, backupOpts)
+			if err != nil {
+				// 目录不存在不算错误（可能该类型从未执行过备份）
+				if os.IsNotExist(err) {
+					return nil
+				}
+				return fmt.Errorf("列出备份失败: %w", err)
+			}
+			allBackups = append(allBackups, backups...)
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	data := map[string]interface{}{}
-	if len(backups) == 0 {
+	if len(allBackups) == 0 {
 		return &OperationResult{
 			Success:   true,
 			Operation: OpList,
@@ -73,8 +107,8 @@ func (m *ManagerApp) ListBackups(ctx context.Context, dbType string) (*Operation
 		}, nil
 	}
 
-	items := make([]interface{}, 0, len(backups))
-	for _, b := range backups {
+	items := make([]interface{}, 0, len(allBackups))
+	for _, b := range allBackups {
 		items = append(items, backupInfoToMap(b))
 	}
 	data[DataKeyBackups] = items
@@ -83,14 +117,14 @@ func (m *ManagerApp) ListBackups(ctx context.Context, dbType string) (*Operation
 		Success:   true,
 		Operation: OpList,
 		DBType:    dbType,
-		Message:   fmt.Sprintf("共 %d 个备份", len(backups)),
+		Message:   fmt.Sprintf("共 %d 个备份", len(allBackups)),
 		Data:      data,
 	}, nil
 }
 
 // ListDatabases 列出指定数据库类型下的所有用户数据库。
 func (m *ManagerApp) ListDatabases(ctx context.Context, dbType string) (*OperationResult, error) {
-	logging.Debug("=== 列出所有数据库 ===")
+	logging.DebugCtx(ctx, "=== 列出所有数据库 ===")
 
 	var databases []string
 	err := withDatabaseBackup(ctx, m.cfg, OpListDatabases, dbType, func(ctx context.Context, db backup.DatabaseBackup) error {
@@ -120,22 +154,43 @@ func (m *ManagerApp) ListDatabases(ctx context.Context, dbType string) (*Operati
 }
 
 // DeleteBackup 删除指定标识符的备份。
+// 对于基于文件系统的驱动（MySQL/PostgreSQL/Dameng），遍历所有备份类型子目录尝试删除；
+// 对于基于数据库命令的驱动（MSSQL/Oracle），opts 被驱动忽略，仅需执行一次。
 func (m *ManagerApp) DeleteBackup(ctx context.Context, dbType, identifier string) (*OperationResult, error) {
 	logging.DebugCtx(ctx, "删除备份", "identifier", identifier)
 
-	backupTarget := filepath.Join(m.cfg.BaseBackupDir, dbType, "backup")
-	backupOpts := backup.BackupOptions{TargetPath: backupTarget}
+	metadata, ok := backup.GetDriverMetadata(dbType)
+	if !ok {
+		return nil, fmt.Errorf("未找到数据库驱动: %s", dbType)
+	}
 
-	err := withDatabaseBackup(ctx, m.cfg, OpDelete, dbType, func(ctx context.Context, db backup.DatabaseBackup) error {
-		if err := db.DeleteBackup(ctx, identifier, backupOpts); err != nil {
-			logging.AuditLog("delete", dbType, "failed", "identifier="+identifier, "error="+err.Error())
-			return fmt.Errorf("删除备份失败: %w", err)
+	typeDirs := make([]string, 0, len(metadata.SupportedBackupTypes))
+	for _, bt := range metadata.SupportedBackupTypes {
+		typeDirs = append(typeDirs, string(bt))
+	}
+
+	var lastErr error
+	deleted := false
+
+	for _, typeDir := range typeDirs {
+		backupOpts := backup.BackupOptions{TargetPath: backupDir(m.cfg.BaseBackupDir, dbType, typeDir)}
+
+		err := withDatabaseBackup(ctx, m.cfg, OpDelete, dbType, func(ctx context.Context, db backup.DatabaseBackup) error {
+			return db.DeleteBackup(ctx, identifier, backupOpts)
+		})
+		if err != nil {
+			lastErr = err
+			continue
 		}
-		logging.AuditLog("delete", dbType, "success", "identifier="+identifier)
-		return nil
-	})
-	if err != nil {
-		return nil, err
+		deleted = true
+		logging.AuditLog("delete", dbType, "success", "identifier="+identifier, "type="+typeDir)
+		// 对于基于数据库命令的驱动（MSSQL/Oracle），首次成功即完成，无需继续遍历
+		break
+	}
+
+	if !deleted && lastErr != nil {
+		logging.AuditLog("delete", dbType, "failed", "identifier="+identifier, "error="+lastErr.Error())
+		return nil, fmt.Errorf("删除备份失败: %w", lastErr)
 	}
 
 	return &OperationResult{
@@ -151,15 +206,16 @@ func (m *ManagerApp) DeleteBackup(ctx context.Context, dbType, identifier string
 func (m *ManagerApp) ValidateBackup(ctx context.Context, dbType, validateID, backupType string) (*OperationResult, error) {
 	logging.DebugCtx(ctx, "验证备份", "id", validateID)
 
-	backupTarget := filepath.Join(m.cfg.BaseBackupDir, dbType, "backup")
-
 	backupTypeVal, err := backup.ParseBackupType(backupType)
 	if err != nil {
 		return nil, fmt.Errorf("无效的备份类型: %s", backupType)
 	}
 
+	// typeDir 由 ParseBackupType 保证非空（空值默认为 logical）。
+	typeDir := string(backupTypeVal)
+
 	backupOpts := backup.BackupOptions{
-		TargetPath: backupTarget,
+		TargetPath: backupDir(m.cfg.BaseBackupDir, dbType, typeDir),
 		Type:       backupTypeVal,
 	}
 
@@ -185,23 +241,38 @@ func (m *ManagerApp) ValidateBackup(ctx context.Context, dbType, validateID, bac
 }
 
 // GetBackupInfo 获取指定备份的详细信息。
+// 遍历所有备份类型子目录尝试获取信息，返回首个成功的结果。
 func (m *ManagerApp) GetBackupInfo(ctx context.Context, dbType, infoID string) (*OperationResult, error) {
 	logging.DebugCtx(ctx, "获取备份信息", "id", infoID)
 
-	backupTarget := filepath.Join(m.cfg.BaseBackupDir, dbType, "backup")
-	backupOpts := backup.BackupOptions{TargetPath: backupTarget}
+	metadata, ok := backup.GetDriverMetadata(dbType)
+	if !ok {
+		return nil, fmt.Errorf("未找到数据库驱动: %s", dbType)
+	}
 
 	var info map[string]string
-	err := withDatabaseBackup(ctx, m.cfg, OpInfo, dbType, func(ctx context.Context, db backup.DatabaseBackup) error {
-		var err error
-		info, err = db.GetBackupInfo(ctx, infoID, backupOpts)
+	var lastErr error
+	found := false
+
+	for _, bt := range metadata.SupportedBackupTypes {
+		typeDir := string(bt)
+		backupOpts := backup.BackupOptions{TargetPath: backupDir(m.cfg.BaseBackupDir, dbType, typeDir)}
+
+		err := withDatabaseBackup(ctx, m.cfg, OpInfo, dbType, func(ctx context.Context, db backup.DatabaseBackup) error {
+			var err error
+			info, err = db.GetBackupInfo(ctx, infoID, backupOpts)
+			return err
+		})
 		if err != nil {
-			return fmt.Errorf("获取备份信息失败: %w", err)
+			lastErr = err
+			continue
 		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
+		found = true
+		break
+	}
+
+	if !found && lastErr != nil {
+		return nil, fmt.Errorf("获取备份信息失败: %w", lastErr)
 	}
 
 	data := make(map[string]interface{}, len(info))
@@ -269,7 +340,7 @@ func (m *ManagerApp) UnregisterBackup(ctx context.Context, dbType, unregisterID 
 
 // VerifyBackupStatus 检查备份状态并更新目录库。
 func (m *ManagerApp) VerifyBackupStatus(ctx context.Context, dbType string) (*OperationResult, error) {
-	logging.Debug("=== 检查备份状态 ===")
+	logging.DebugCtx(ctx, "=== 检查备份状态 ===")
 
 	err := withDatabaseBackup(ctx, m.cfg, OpVerifyStatus, dbType, func(ctx context.Context, db backup.DatabaseBackup) error {
 		if err := db.VerifyBackupStatus(ctx); err != nil {
@@ -290,22 +361,37 @@ func (m *ManagerApp) VerifyBackupStatus(ctx context.Context, dbType string) (*Op
 }
 
 // DeleteInvalidBackups 删除目录库中的无效备份记录。
+// 遍历所有备份类型子目录（logical/physical），对每种类型执行删除。
+// 对于基于数据库命令的驱动（MSSQL/Oracle），opts 被驱动忽略，重复调用为空操作。
 func (m *ManagerApp) DeleteInvalidBackups(ctx context.Context, dbType string) (*OperationResult, error) {
-	logging.Debug("=== 删除无效备份 ===")
+	logging.DebugCtx(ctx, "=== 删除无效备份 ===")
 
-	backupTarget := filepath.Join(m.cfg.BaseBackupDir, dbType, "backup")
-	backupOpts := backup.BackupOptions{TargetPath: backupTarget}
+	metadata, ok := backup.GetDriverMetadata(dbType)
+	if !ok {
+		return nil, fmt.Errorf("未找到数据库驱动: %s", dbType)
+	}
 
-	err := withDatabaseBackup(ctx, m.cfg, OpDeleteInvalid, dbType, func(ctx context.Context, db backup.DatabaseBackup) error {
-		if err := db.DeleteInvalidBackups(ctx, backupOpts); err != nil {
-			logging.AuditLog("delete_invalid", dbType, "failed", "error="+err.Error())
-			return fmt.Errorf("删除无效备份失败: %w", err)
+	var lastErr error
+	for _, bt := range metadata.SupportedBackupTypes {
+		typeDir := string(bt)
+		backupOpts := backup.BackupOptions{TargetPath: backupDir(m.cfg.BaseBackupDir, dbType, typeDir)}
+
+		err := withDatabaseBackup(ctx, m.cfg, OpDeleteInvalid, dbType, func(ctx context.Context, db backup.DatabaseBackup) error {
+			if err := db.DeleteInvalidBackups(ctx, backupOpts); err != nil {
+				logging.AuditLog("delete_invalid", dbType, "failed", "type="+typeDir, "error="+err.Error())
+				return fmt.Errorf("删除无效备份失败: %w", err)
+			}
+			logging.AuditLog("delete_invalid", dbType, "success", "type="+typeDir)
+			return nil
+		})
+		if err != nil {
+			lastErr = err
+			continue
 		}
-		logging.AuditLog("delete_invalid", dbType, "success")
-		return nil
-	})
-	if err != nil {
-		return nil, err
+	}
+
+	if lastErr != nil {
+		return nil, lastErr
 	}
 
 	return &OperationResult{
@@ -317,31 +403,46 @@ func (m *ManagerApp) DeleteInvalidBackups(ctx context.Context, dbType string) (*
 }
 
 // DeleteAllBackups 删除指定数据库的所有备份。
+// 遍历所有备份类型子目录（logical/physical），对每种类型执行删除。
+// 对于基于数据库命令的驱动（MSSQL/Oracle），opts 被驱动忽略，重复调用为空操作。
 func (m *ManagerApp) DeleteAllBackups(ctx context.Context, dbType string) (*OperationResult, error) {
-	logging.Debug("=== 删除所有备份 ===")
+	logging.DebugCtx(ctx, "=== 删除所有备份 ===")
 
 	if !confirmAction("确定要删除所有备份吗？此操作无法恢复！") {
 		return &OperationResult{
-			Success:   true,
+			Success:   false,
 			Operation: OpDeleteAll,
 			DBType:    dbType,
 			Message:   "操作已取消",
 		}, nil
 	}
 
-	backupTarget := filepath.Join(m.cfg.BaseBackupDir, dbType, "backup")
-	backupOpts := backup.BackupOptions{TargetPath: backupTarget}
+	metadata, ok := backup.GetDriverMetadata(dbType)
+	if !ok {
+		return nil, fmt.Errorf("未找到数据库驱动: %s", dbType)
+	}
 
-	err := withDatabaseBackup(ctx, m.cfg, OpDeleteAll, dbType, func(ctx context.Context, db backup.DatabaseBackup) error {
-		if err := db.DeleteAllBackups(ctx, backupOpts); err != nil {
-			logging.AuditLog("delete_all", dbType, "failed", "error="+err.Error())
-			return fmt.Errorf("删除所有备份失败: %w", err)
+	var lastErr error
+	for _, bt := range metadata.SupportedBackupTypes {
+		typeDir := string(bt)
+		backupOpts := backup.BackupOptions{TargetPath: backupDir(m.cfg.BaseBackupDir, dbType, typeDir)}
+
+		err := withDatabaseBackup(ctx, m.cfg, OpDeleteAll, dbType, func(ctx context.Context, db backup.DatabaseBackup) error {
+			if err := db.DeleteAllBackups(ctx, backupOpts); err != nil {
+				logging.AuditLog("delete_all", dbType, "failed", "type="+typeDir, "error="+err.Error())
+				return fmt.Errorf("删除所有备份失败: %w", err)
+			}
+			logging.AuditLog("delete_all", dbType, "success", "type="+typeDir)
+			return nil
+		})
+		if err != nil {
+			lastErr = err
+			continue
 		}
-		logging.AuditLog("delete_all", dbType, "success")
-		return nil
-	})
-	if err != nil {
-		return nil, err
+	}
+
+	if lastErr != nil {
+		return nil, lastErr
 	}
 
 	return &OperationResult{
@@ -353,14 +454,8 @@ func (m *ManagerApp) DeleteAllBackups(ctx context.Context, dbType string) (*Oper
 }
 
 // ValidateConfig 验证配置文件的有效性。
-func (m *ManagerApp) ValidateConfig(configFilePath string) (*OperationResult, error) {
+func (m *ManagerApp) ValidateConfig() (*OperationResult, error) {
 	logging.Debug("=== 验证配置文件 ===")
-
-	if configFilePath == "" {
-		return nil, fmt.Errorf("必须指定配置文件路径")
-	}
-
-	logging.Debug("正在验证配置文件", "path", configFilePath)
 
 	if m.cfg.BaseBackupDir == "" {
 		logging.Warn("警告: base_backup_dir 未配置，将使用默认路径")
@@ -421,7 +516,7 @@ func FormatFileSize(size int64) string {
 // confirmAction 请求用户确认操作。
 func confirmAction(message string) bool {
 	reader := bufio.NewReader(os.Stdin)
-	logging.Warn(message)
+	fmt.Fprintf(os.Stderr, "%s (y/n): ", message)
 
 	response, err := reader.ReadString('\n')
 	if err != nil {
@@ -432,6 +527,61 @@ func confirmAction(message string) bool {
 	return response == "y" || response == "yes"
 }
 
+// EnableArchiveLog 启用数据库的归档模式（仅 Oracle 和达梦支持）。
+// archiveDest: 归档日志存储目录，为空则使用默认配置。
+func (m *ManagerApp) EnableArchiveLog(ctx context.Context, dbType, archiveDest string) (*OperationResult, error) {
+	logging.InfoCtx(ctx, "=== 启用归档模式 ===", "db_type", dbType, "archive_dest", archiveDest)
+
+	err := withDatabaseBackup(ctx, m.cfg, OpEnableArchive, dbType, func(ctx context.Context, db backup.DatabaseBackup) error {
+		// 类型断言：检查是否实现 ArchiveModeManager 接口
+		archiver, ok := db.(backup.ArchiveModeManager)
+		if !ok {
+			return fmt.Errorf("%s 不支持归档模式管理（仅 Oracle 和达梦支持）", dbType)
+		}
+		if err := archiver.EnableArchiveLogMode(ctx, archiveDest); err != nil {
+			return fmt.Errorf("启用归档模式失败: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &OperationResult{
+		Success:   true,
+		Operation: OpEnableArchive,
+		DBType:    dbType,
+		Message:   "归档模式已启用",
+	}, nil
+}
+
+// DisableArchiveLog 关闭数据库的归档模式（仅 Oracle 和达梦支持）。
+func (m *ManagerApp) DisableArchiveLog(ctx context.Context, dbType string) (*OperationResult, error) {
+	logging.InfoCtx(ctx, "=== 关闭归档模式 ===", "db_type", dbType)
+
+	err := withDatabaseBackup(ctx, m.cfg, OpDisableArchive, dbType, func(ctx context.Context, db backup.DatabaseBackup) error {
+		// 类型断言：检查是否实现 ArchiveModeManager 接口
+		archiver, ok := db.(backup.ArchiveModeManager)
+		if !ok {
+			return fmt.Errorf("%s 不支持归档模式管理（仅 Oracle 和达梦支持）", dbType)
+		}
+		if err := archiver.DisableArchiveLogMode(ctx); err != nil {
+			return fmt.Errorf("关闭归档模式失败: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &OperationResult{
+		Success:   true,
+		Operation: OpDisableArchive,
+		DBType:    dbType,
+		Message:   "归档模式已关闭",
+	}, nil
+}
+
 // backupInfoToMap 将 BackupInfo 转换为 map 用于结构化输出。
 func backupInfoToMap(b backup.BackupInfo) map[string]interface{} {
 	m := map[string]interface{}{
@@ -440,6 +590,9 @@ func backupInfoToMap(b backup.BackupInfo) map[string]interface{} {
 	}
 	if b.BackupType != "" {
 		m["type"] = b.BackupType
+	}
+	if b.BackupMode != "" {
+		m["mode"] = b.BackupMode
 	}
 	if b.Size > 0 {
 		m[DataKeySize] = FormatFileSize(b.Size)
@@ -457,4 +610,23 @@ func backupInfoToMap(b backup.BackupInfo) map[string]interface{} {
 		m["path"] = b.BackupPath
 	}
 	return m
+}
+
+// isBackupTypeSupported 检查备份类型是否被驱动支持。
+func isBackupTypeSupported(metadata backup.DriverMetadata, backupType string) bool {
+	for _, bt := range metadata.SupportedBackupTypes {
+		if string(bt) == backupType {
+			return true
+		}
+	}
+	return false
+}
+
+// formatSupportedTypes 将支持的备份类型列表格式化为字符串。
+func formatSupportedTypes(types []backup.BackupType) []string {
+	result := make([]string, 0, len(types))
+	for _, t := range types {
+		result = append(result, string(t))
+	}
+	return result
 }

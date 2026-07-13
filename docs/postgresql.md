@@ -237,9 +237,10 @@ pg_verifybackup /backup/postgresql_20260415_150405
 | Extra 键       | 说明                                                                                                                      | 必填         |
 | -------------- | ------------------------------------------------------------------------------------------------------------------------- | ------------ |
 | `PG_BIN_PATH`  | PostgreSQL 工具目录路径，设置后从此目录查找 `psql`、`pg_dump`、`pg_dumpall`、`pg_basebackup`、`pg_verifybackup`、`pg_ctl` | 否           |
-| `SSLMode`      | SSL 连接模式，非空时设置 `PGSSLMODE` 环境变量                                                                             | 否           |
 | `DATA_DIR`     | PostgreSQL 数据目录路径，物理还原时必需                                                                                   | 物理还原必填 |
 | `SERVICE_NAME` | Windows 下 PostgreSQL 服务名称，默认为 `postgresql-x64-18`                                                                | 否           |
+
+> **SSLMode 说明**：`ssl_mode` 是顶层配置字段（非 Extra 参数），非空时自动设置 `PGSSLMODE` 环境变量。
 
 ---
 
