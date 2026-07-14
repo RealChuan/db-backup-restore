@@ -102,6 +102,28 @@ RUN {
 DELETE NOPROMPT OBSOLETE;
 ```
 
+### 增量备份策略最佳实践
+
+> **重要**：Oracle 增量备份策略需要先创建 Level 0 基础备份，后续才能创建 Level 1 增量备份。RMAN 的 `RESTORE DATABASE` 会自动处理增量链（Level 0 + Level 1），无需区分全量还原和增量还原。
+
+推荐的增量备份流程：
+
+1. **首次备份**：使用 `--backup-mode level0` 创建 Level 0 基础备份，作为增量策略的起点
+2. **后续备份**：使用 `--backup-mode incremental` 创建 Level 1 差异增量
+3. **定期 Level 0**：定期使用 `--backup-mode level0` 创建新的 Level 0 基础备份
+
+增量策略下，工具会自动配置 `RECOVERY WINDOW` 保留策略（默认 7 天），防止 `DELETE OBSOLETE` 误删 Level 0 基础备份导致增量链断裂。可通过 `--retention-days` 参数自定义保留窗口。
+
+```bash
+# 使用默认 7 天保留窗口
+db-backup-restore backup -c config.json -t oracle --backup-type physical --backup-mode incremental
+
+# 自定义 14 天保留窗口
+db-backup-restore backup -c config.json -t oracle --backup-type physical --backup-mode incremental --retention-days 14
+```
+
+> **注意**：`--retention-days` 仅在增量模式（incremental/differential/level0）下生效。全量备份（full）模式下忽略此参数。
+
 ### 差异增量备份（Incremental Level 1）
 
 Oracle 的差异增量备份（Differential Incremental）备份自上次 Level 0 或 Level 1 备份以来所有变化的块：
@@ -248,6 +270,44 @@ RECOVER DATABASE;
 ALTER DATABASE OPEN RESETLOGS;
 ```
 
+### 异机还原（使用 CATALOG 注册备份）
+
+在异机还原时，需要先将备份文件注册到 RMAN 仓库：
+
+```bash
+db-backup-restore restore -c config.json -t oracle --backup-type physical \
+  --backup-identifier /backup/oracle --catalog-path /backup/oracle
+```
+
+### 自动恢复控制文件
+
+在数据库还原流程中自动先恢复控制文件，适用于控制文件丢失的灾难恢复场景：
+
+```bash
+# 从自动备份恢复控制文件
+db-backup-restore restore -c config.json -t oracle --backup-type physical \
+  --auto-restore-controlfile
+
+# 指定 TAG 恢复控制文件
+db-backup-restore restore -c config.json -t oracle --backup-type physical \
+  --backup-identifier TAG20260714T120000 --auto-restore-controlfile
+```
+
+对应的 RMAN 脚本：
+
+```rman
+RUN {
+  STARTUP NOMOUNT;
+  RESTORE CONTROLFILE FROM AUTOBACKUP;
+  ALTER DATABASE MOUNT;
+  RESTORE DATABASE;
+  RECOVER DATABASE;
+  ALTER DATABASE OPEN RESETLOGS;
+}
+```
+
+> **与 `--restore-mode controlfile` 的区别**：`--restore-mode controlfile` 仅还原控制文件本身；`--auto-restore-controlfile` 是在数据库还原流程中先自动恢复控制文件，然后继续还原和恢复整个数据库。
+
 ### 异机还原
 
 ```rman
@@ -258,13 +318,39 @@ DUPLICATE TARGET DATABASE TO newdb
   SET DB_FILE_NAME_CONVERT '/old_data/','/new_data/';
 ```
 
-### 增量还原（NOREDO 模式）
+### 还原到最新状态（支持增量链自动处理）
 
-跳过归档日志应用，仅还原数据文件：
+RMAN 的 `RESTORE DATABASE` 会自动处理增量链（Level 0 + Level 1），无需区分全量还原和增量还原：
+
+```rman
+RUN {
+  SHUTDOWN IMMEDIATE;
+  STARTUP MOUNT;
+  RESTORE DATABASE;
+  RECOVER DATABASE;
+  ALTER DATABASE OPEN;
+}
+```
+
+### 还原跳过归档日志（NOREDO 模式）
+
+适用于备库同步、归档日志不可用、仅应用增量备份的场景：
 
 ```bash
 db-backup-restore restore -c config.json -t oracle --backup-type physical \
-  --restore-mode incremental --backup-identifier /backup/oracle --no-redo
+  --backup-identifier /backup/oracle --no-redo
+```
+
+对应的 RMAN 脚本：
+
+```rman
+RUN {
+  SHUTDOWN IMMEDIATE;
+  STARTUP MOUNT;
+  RESTORE DATABASE;
+  RECOVER DATABASE NOREDO;
+  ALTER DATABASE OPEN RESETLOGS;
+}
 ```
 
 ### 归档还原（按序列号范围）

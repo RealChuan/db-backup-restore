@@ -13,17 +13,19 @@ import (
 
 // RestoreOptions 还原应用层的选项参数。
 type RestoreOptions struct {
-	BackupIdentifier    string // 备份标识符（Oracle/达梦: TAG 或备份集路径; MySQL/PostgreSQL/MSSQL: 备份文件路径）
-	TargetDatabaseName  string // 还原的目标数据库名（MySQL/PostgreSQL/MSSQL 逻辑还原时指定）
-	RemapSchema         string // 模式映射（达梦 dimp: REMAP_SCHEMA=source:target，将源模式数据导入目标模式）
-	Type                string // 备份类型: logical, physical
-	RecoveryPointInTime string // 时间点还原，格式: 2006-01-02T15:04:05（Oracle/达梦支持，可与 BackupIdentifier 组合）
-	RestoreMode         string // 还原模式: full, incremental, archive, controlfile（Oracle/达梦支持）
-	RecoverySCN         string // 按 SCN 还原（仅 Oracle 支持，可与 BackupIdentifier 组合）
-	RecoveryLSN         string // 按 LSN 还原（仅达梦支持，配合 archive 模式使用）
-	NoRedo              bool   // 增量还原时跳过归档日志应用，即 NOREDO（仅 Oracle 支持）
-	ArchiveFromSeq      string // 归档还原起始序列号（仅 Oracle 支持，配合 archive 模式使用）
-	ArchiveUntilSeq     string // 归档还原结束序列号（仅 Oracle 支持，配合 archive 模式使用）
+	BackupIdentifier       string // 备份标识符（Oracle/达梦: TAG 或备份集路径; MySQL/PostgreSQL/MSSQL: 备份文件路径）
+	TargetDatabaseName     string // 还原的目标数据库名（MySQL/PostgreSQL/MSSQL 逻辑还原时指定）
+	RemapSchema            string // 模式映射（达梦 dimp: REMAP_SCHEMA=source:target，将源模式数据导入目标模式）
+	Type                   string // 备份类型: logical, physical
+	RecoveryPointInTime    string // 时间点还原，格式: 2006-01-02T15:04:05（Oracle/达梦支持，可与 BackupIdentifier 组合）
+	RestoreMode            string // 还原模式: full, incremental, archive, controlfile（Oracle/达梦支持）
+	RecoverySCN            string // 按 SCN 还原（仅 Oracle 支持，可与 BackupIdentifier 组合）
+	RecoveryLSN            string // 按 LSN 还原（仅达梦支持，配合 archive 模式使用）
+	NoRedo                 bool   // 增量还原时跳过归档日志应用，即 NOREDO（仅 Oracle 支持）
+	ArchiveFromSeq         string // 归档还原起始序列号（仅 Oracle 支持，配合 archive 模式使用）
+	ArchiveUntilSeq        string // 归档还原结束序列号（仅 Oracle 支持，配合 archive 模式使用）
+	CatalogPath            string // 备份文件注册路径（仅 Oracle 支持，异机还原时使用 CATALOG START WITH 注册备份）
+	AutoRestoreControlFile bool   // 自动恢复控制文件（仅 Oracle 支持，在数据库还原流程中先恢复控制文件）
 }
 
 // RestoreApp 封装还原操作的应用服务。
@@ -95,17 +97,19 @@ func (a *RestoreApp) buildRestoreOptions(dbType string, opts RestoreOptions) (ba
 	typeDir := string(backupTypeVal)
 
 	restoreOpts := backup.RestoreOptions{
-		BackupIdentifier:   opts.BackupIdentifier,
-		TargetDatabaseName: opts.TargetDatabaseName,
-		RemapSchema:        opts.RemapSchema,
-		BackupType:         backupTypeVal,
-		RestoreMode:        restoreModeVal,
-		RecoverySCN:        opts.RecoverySCN,
-		RecoveryLSN:        opts.RecoveryLSN,
-		NoRedo:             opts.NoRedo,
-		ArchiveFromSeq:     opts.ArchiveFromSeq,
-		ArchiveUntilSeq:    opts.ArchiveUntilSeq,
-		ArchiveLogDest:     archiveLogDir(a.cfg.BaseBackupDir, dbType, typeDir),
+		BackupIdentifier:       opts.BackupIdentifier,
+		TargetDatabaseName:     opts.TargetDatabaseName,
+		RemapSchema:            opts.RemapSchema,
+		BackupType:             backupTypeVal,
+		RestoreMode:            restoreModeVal,
+		RecoverySCN:            opts.RecoverySCN,
+		RecoveryLSN:            opts.RecoveryLSN,
+		NoRedo:                 opts.NoRedo,
+		ArchiveFromSeq:         opts.ArchiveFromSeq,
+		ArchiveUntilSeq:        opts.ArchiveUntilSeq,
+		CatalogPath:            opts.CatalogPath,
+		AutoRestoreControlFile: opts.AutoRestoreControlFile,
+		ArchiveLogDest:         archiveLogDir(a.cfg.BaseBackupDir, dbType, typeDir),
 	}
 
 	if opts.RecoveryPointInTime != "" {

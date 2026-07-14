@@ -38,8 +38,7 @@ func TestOutputWriter_Text_DataSimpleValues(t *testing.T) {
 	if err := w.Write(result); err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}
-	// Data keys are sorted alphabetically
-	want := "backup: 备份成功\n  duration: 12.3s\n  file: /backup/mysql_20260701.sql\n  size: 1.5 MB\n"
+	want := "backup: 备份成功\n  duration=12.3s, file=/backup/mysql_20260701.sql, size=1.5 MB\n"
 	if got := buf.String(); got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -58,7 +57,7 @@ func TestOutputWriter_Text_DataListValues(t *testing.T) {
 	if err := w.Write(result); err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}
-	want := "list_databases: 共 3 个数据库\n  databases:\n    - db_alpha\n    - db_beta\n    - db_gamma\n"
+	want := "list_databases: 共 3 个数据库\n  databases=db_alpha,db_beta,db_gamma\n"
 	if got := buf.String(); got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -77,13 +76,13 @@ func TestOutputWriter_Text_DataEmptyList(t *testing.T) {
 	if err := w.Write(result); err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}
-	want := "list_databases: 共 0 个数据库\n  databases: (空)\n"
+	want := "list_databases: 共 0 个数据库\n  databases=\n"
 	if got := buf.String(); got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
 
-func TestOutputWriter_Text_DataNestedMap(t *testing.T) {
+func TestOutputWriter_Text_DataNestedMap_InfoStaysMultiline(t *testing.T) {
 	var buf bytes.Buffer
 	w := &OutputWriter{format: backup.OutputFormatText, writer: &buf}
 	result := &OperationResult{
@@ -97,7 +96,7 @@ func TestOutputWriter_Text_DataNestedMap(t *testing.T) {
 	if err := w.Write(result); err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}
-	// Data keys sorted: detail.size, detail.type, id
+	// info 操作保持多行逐字段格式
 	want := "info: 完成\n  detail.size: 10 MB\n  detail.type: logical\n  id: backup_001\n"
 	if got := buf.String(); got != want {
 		t.Errorf("got %q, want %q", got, want)
@@ -146,13 +145,13 @@ func TestOutputWriter_Text_DataListOfMaps(t *testing.T) {
 	if err := w.Write(result); err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}
-	want := "list: 共 1 个备份\n  backups:\n      id: bs_001\n      type: logical\n"
+	want := "list: 共 1 个备份\n  id=bs_001, type=logical\n"
 	if got := buf.String(); got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
 
-func TestOutputWriter_Text_DataListOfMaps_SeparatedByBlankLine(t *testing.T) {
+func TestOutputWriter_Text_DataListOfMaps_EachOnOneLine(t *testing.T) {
 	var buf bytes.Buffer
 	w := &OutputWriter{format: backup.OutputFormatText, writer: &buf}
 	result := &OperationResult{
@@ -174,19 +173,68 @@ func TestOutputWriter_Text_DataListOfMaps_SeparatedByBlankLine(t *testing.T) {
 	output := buf.String()
 	lines := strings.Split(output, "\n")
 
-	// 验证 map 列表项之间有空行分隔
-	// "id: 706" 后面的行是 "mode: full"，"mode: full" 后面应是空行
-	// "id: 707" 后面的行是 "mode: archive"，"mode: archive" 后面应是空行
-	// "id: 708" 后面的行是 "mode: full"，"mode: full" 后面不应有空行（最后一个条目）
-	foundSeparation := 0
-	for i := 0; i < len(lines)-1; i++ {
-		trimmed := strings.TrimSpace(lines[i])
-		if (trimmed == "mode: full" && i > 0 && strings.TrimSpace(lines[i-1]) == "id: 706") ||
-			(trimmed == "mode: archive" && i > 0 && strings.TrimSpace(lines[i-1]) == "id: 707") {
-			if strings.TrimSpace(lines[i+1]) == "" {
-				foundSeparation++
-			}
+	// 验证每个备份占一行，包含 id 和 mode
+	var backupLines []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.Contains(trimmed, "id=") {
+			backupLines = append(backupLines, trimmed)
 		}
 	}
-	assert.Equal(t, 2, foundSeparation, "map 列表项之间应有空行分隔")
+	assert.Equal(t, 3, len(backupLines), "应有 3 行备份信息")
+	assert.Contains(t, backupLines[0], "id=706")
+	assert.Contains(t, backupLines[0], "mode=full")
+	assert.Contains(t, backupLines[1], "id=707")
+	assert.Contains(t, backupLines[1], "mode=archive")
+	assert.Contains(t, backupLines[2], "id=708")
+	assert.Contains(t, backupLines[2], "mode=full")
+}
+
+func TestOutputWriter_Text_ValidateConfig(t *testing.T) {
+	var buf bytes.Buffer
+	w := &OutputWriter{format: backup.OutputFormatText, writer: &buf}
+	result := &OperationResult{
+		Success:   true,
+		Operation: "validate_config",
+		Message:   "配置验证通过",
+		Data: map[string]interface{}{
+			"databases_count": 3,
+			"base_backup_dir": "/data/backup",
+		},
+	}
+	if err := w.Write(result); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	want := "validate_config: 配置验证通过\n  base_backup_dir=/data/backup, databases_count=3\n"
+	if got := buf.String(); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestOutputWriter_Text_ListDrivers(t *testing.T) {
+	var buf bytes.Buffer
+	w := &OutputWriter{format: backup.OutputFormatText, writer: &buf}
+	result := &OperationResult{
+		Success:   true,
+		Operation: "list_drivers",
+		Message:   "共 1 个驱动",
+		Data: map[string]interface{}{
+			"drivers": []interface{}{
+				map[string]interface{}{
+					"name":                   "mysql",
+					"version":                "1.0.0",
+					"description":            "MySQL driver",
+					"supported_actions":      []interface{}{"backup", "restore"},
+					"supported_backup_types": []interface{}{"logical", "physical"},
+				},
+			},
+		},
+	}
+	if err := w.Write(result); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	want := "list_drivers: 共 1 个驱动\n  description=MySQL driver, name=mysql, supported_actions=backup,restore, supported_backup_types=logical,physical, version=1.0.0\n"
+	if got := buf.String(); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
 }

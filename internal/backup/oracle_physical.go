@@ -116,78 +116,122 @@ func (o *OracleBackup) configureAutoBackupFormat(ctx context.Context, backupDir 
 //   - differential: 累积增量备份 (BACKUP INCREMENTAL LEVEL 1 CUMULATIVE)
 //   - archive: 独立归档日志备份 (BACKUP ARCHIVELOG ALL)
 func (o *OracleBackup) buildBackupScript(opts BackupOptions, backupDir string) (string, error) {
-	// 独立归档日志备份使用单独的脚本
 	if opts.Mode == BackupModeArchive {
 		return o.buildArchiveOnlyBackupScript(opts, backupDir)
 	}
 
-	var script strings.Builder
-	script.WriteString("RUN {\n")
-
-	// 安全校验：备份路径
 	cleanDir, err := sanitizeBackupPath(backupDir)
 	if err != nil {
 		return "", fmt.Errorf("备份路径校验失败: %w", err)
 	}
 
-	// 构建备份文件格式
-	datafileFormat := filepath.Join(cleanDir, "%U")      // 数据文件备份格式
-	cfFormat := filepath.Join(cleanDir, "cf_%U")         // 控制文件备份格式
-	spfileFormat := filepath.Join(cleanDir, "spfile_%U") // 参数文件备份格式
+	safeFormats := o.buildBackupFormats(cleanDir)
 
-	// 安全转义：防止 RMAN 脚本注入
-	safeDatafileFormat := escapeOracleRMANString(datafileFormat)
-	safeCfFormat := escapeOracleRMANString(cfFormat)
-	safeSpfileFormat := escapeOracleRMANString(spfileFormat)
+	var script strings.Builder
+	script.WriteString("RUN {\n")
 
-	if opts.ParallelWorkers > 1 {
-		for i := 1; i <= opts.ParallelWorkers; i++ {
-			fmt.Fprintf(&script, "  ALLOCATE CHANNEL ch%d DEVICE TYPE DISK FORMAT '%s';\n", i, safeDatafileFormat)
-		}
-	} else {
-		fmt.Fprintf(&script, "  ALLOCATE CHANNEL ch1 DEVICE TYPE DISK FORMAT '%s';\n", safeDatafileFormat)
-	}
+	o.appendChannelAlloc(&script, opts.ParallelWorkers, safeFormats.datafile)
+	o.appendCompressionConfig(&script, opts)
+	o.appendEncryptionConfig(&script, opts)
+	o.appendRetentionPolicy(&script, opts)
+	o.appendBackupCommand(&script, opts, safeFormats)
 
-	if opts.EnableCompression {
-		level := mapCompressionLevelToOracle(opts.CompressionLevel)
-		fmt.Fprintf(&script, "  CONFIGURE COMPRESSION ALGORITHM '%s';\n", level)
-	}
+	fmt.Fprintf(&script, "  BACKUP CURRENT CONTROLFILE FORMAT '%s';\n", safeFormats.controlfile)
+	fmt.Fprintf(&script, "  BACKUP SPFILE FORMAT '%s';\n", safeFormats.spfile)
 
-	if opts.Encryption {
-		script.WriteString("  CONFIGURE ENCRYPTION FOR DATABASE ON;\n")
-		if opts.EncryptionKey != "" {
-			safeKey := escapeOracleRMANString(opts.EncryptionKey)
-			fmt.Fprintf(&script, "  SET ENCRYPTION IDENTIFIED BY '%s' ONLY;\n", safeKey)
-		}
-	}
-
-	switch opts.Mode {
-	case BackupModeFull:
-		fmt.Fprintf(&script, "  BACKUP DATABASE PLUS ARCHIVELOG DELETE INPUT FORMAT '%s';\n", safeDatafileFormat)
-	case BackupModeLevel0:
-		fmt.Fprintf(&script, "  BACKUP INCREMENTAL LEVEL 0 DATABASE PLUS ARCHIVELOG DELETE INPUT FORMAT '%s';\n", safeDatafileFormat)
-	case BackupModeIncremental:
-		fmt.Fprintf(&script, "  BACKUP INCREMENTAL LEVEL 1 DATABASE PLUS ARCHIVELOG DELETE INPUT FORMAT '%s';\n", safeDatafileFormat)
-	case BackupModeDifferential:
-		fmt.Fprintf(&script, "  BACKUP INCREMENTAL LEVEL 1 CUMULATIVE DATABASE PLUS ARCHIVELOG DELETE INPU FORMAT '%s';\n", safeDatafileFormat)
-	default:
-		fmt.Fprintf(&script, "  BACKUP DATABASE PLUS ARCHIVELOG DELETE INPUT FORMAT '%s';\n", safeDatafileFormat)
-	}
-
-	fmt.Fprintf(&script, "  BACKUP CURRENT CONTROLFILE FORMAT '%s';\n", safeCfFormat)
-	fmt.Fprintf(&script, "  BACKUP SPFILE FORMAT '%s';\n", safeSpfileFormat)
-
-	if opts.ParallelWorkers > 1 {
-		for i := 1; i <= opts.ParallelWorkers; i++ {
-			fmt.Fprintf(&script, "  RELEASE CHANNEL ch%d;\n", i)
-		}
-	} else {
-		script.WriteString("  RELEASE CHANNEL ch1;\n")
-	}
+	o.appendChannelRelease(&script, opts.ParallelWorkers)
 
 	script.WriteString("}\n")
 	script.WriteString("DELETE NOPROMPT OBSOLETE;\n")
 	return script.String(), nil
+}
+
+// backupFormats 存储安全转义后的备份文件格式
+type backupFormats struct {
+	datafile    string
+	controlfile string
+	spfile      string
+}
+
+// buildBackupFormats 构建并转义备份文件格式
+func (o *OracleBackup) buildBackupFormats(cleanDir string) backupFormats {
+	return backupFormats{
+		datafile:    escapeOracleRMANString(filepath.Join(cleanDir, "%U")),
+		controlfile: escapeOracleRMANString(filepath.Join(cleanDir, "cf_%U")),
+		spfile:      escapeOracleRMANString(filepath.Join(cleanDir, "spfile_%U")),
+	}
+}
+
+// appendChannelAlloc 追加通道分配语句
+func (o *OracleBackup) appendChannelAlloc(script *strings.Builder, workers int, format string) {
+	if workers > 1 {
+		for i := 1; i <= workers; i++ {
+			fmt.Fprintf(script, "  ALLOCATE CHANNEL ch%d DEVICE TYPE DISK FORMAT '%s';\n", i, format)
+		}
+	} else {
+		fmt.Fprintf(script, "  ALLOCATE CHANNEL ch1 DEVICE TYPE DISK FORMAT '%s';\n", format)
+	}
+}
+
+// appendChannelRelease 追加通道释放语句
+func (o *OracleBackup) appendChannelRelease(script *strings.Builder, workers int) {
+	if workers > 1 {
+		for i := 1; i <= workers; i++ {
+			fmt.Fprintf(script, "  RELEASE CHANNEL ch%d;\n", i)
+		}
+	} else {
+		script.WriteString("  RELEASE CHANNEL ch1;\n")
+	}
+}
+
+// appendCompressionConfig 追加压缩配置
+func (o *OracleBackup) appendCompressionConfig(script *strings.Builder, opts BackupOptions) {
+	if opts.EnableCompression {
+		level := mapCompressionLevelToOracle(opts.CompressionLevel)
+		fmt.Fprintf(script, "  CONFIGURE COMPRESSION ALGORITHM '%s';\n", level)
+	}
+}
+
+// appendEncryptionConfig 追加加密配置
+func (o *OracleBackup) appendEncryptionConfig(script *strings.Builder, opts BackupOptions) {
+	if opts.Encryption {
+		script.WriteString("  CONFIGURE ENCRYPTION FOR DATABASE ON;\n")
+		if opts.EncryptionKey != "" {
+			safeKey := escapeOracleRMANString(opts.EncryptionKey)
+			fmt.Fprintf(script, "  SET ENCRYPTION IDENTIFIED BY '%s' ONLY;\n", safeKey)
+		}
+	}
+}
+
+// appendRetentionPolicy 追增增量策略保留策略配置
+func (o *OracleBackup) appendRetentionPolicy(script *strings.Builder, opts BackupOptions) {
+	if opts.Mode == BackupModeIncremental || opts.Mode == BackupModeDifferential || opts.Mode == BackupModeLevel0 {
+		retentionDays := opts.RetentionDays
+		if retentionDays <= 0 {
+			retentionDays = 7
+		}
+		fmt.Fprintf(script, "  CONFIGURE RETENTION POLICY TO RECOVERY WINDOW OF %d DAYS;\n", retentionDays)
+	}
+}
+
+// appendBackupCommand 追加备份命令（根据模式选择 BACKUP 语句）
+func (o *OracleBackup) appendBackupCommand(script *strings.Builder, opts BackupOptions, formats backupFormats) {
+	cmd := o.buildBackupCommandStr(opts, formats.datafile)
+	fmt.Fprintf(script, "  %s\n", cmd)
+}
+
+// buildBackupCommandStr 根据备份模式构建 BACKUP 命令字符串
+func (o *OracleBackup) buildBackupCommandStr(opts BackupOptions, format string) string {
+	switch opts.Mode {
+	case BackupModeLevel0:
+		return fmt.Sprintf("BACKUP INCREMENTAL LEVEL 0 DATABASE PLUS ARCHIVELOG DELETE INPUT FORMAT '%s';", format)
+	case BackupModeIncremental:
+		return fmt.Sprintf("BACKUP INCREMENTAL LEVEL 1 DATABASE PLUS ARCHIVELOG DELETE INPUT FORMAT '%s';", format)
+	case BackupModeDifferential:
+		return fmt.Sprintf("BACKUP INCREMENTAL LEVEL 1 CUMULATIVE DATABASE PLUS ARCHIVELOG DELETE INPUT FORMAT '%s';", format)
+	default:
+		return fmt.Sprintf("BACKUP DATABASE PLUS ARCHIVELOG DELETE INPUT FORMAT '%s';", format)
+	}
 }
 
 // buildArchiveOnlyBackupScript 构建独立归档日志备份脚本（不含数据文件备份）
@@ -264,60 +308,63 @@ func (o *OracleBackup) parseBackupOutput(output, backupDir string) ([]string, in
 	return files, totalSize, backupSetKey, nil
 }
 
-// buildFullRestoreScript 构建全量还原脚本
-// 执行流程：SHUTDOWN → STARTUP MOUNT → [SET UNTIL] → RESTORE DATABASE [FROM TAG] → RECOVER DATABASE → OPEN
-// 支持组合：TAG + PITR/SCN 可同时指定，TAG 选择备份集，PITR/SCN 指定恢复目标点
+// buildFullRestoreScript 构建 Oracle 还原脚本
+// RMAN 的 RESTORE DATABASE 自动处理增量链（Level 0 + Level 1），无需区分全量/增量还原
+// 执行流程取决于 AutoRestoreControlFile:
+//   - false: SHUTDOWN → STARTUP MOUNT → [SET UNTIL] → [CATALOG] → RESTORE DATABASE [FROM TAG] → RECOVER DATABASE [NOREDO] → OPEN
+//   - true:  STARTUP NOMOUNT → RESTORE CONTROLFILE → ALTER DATABASE MOUNT → [SET UNTIL] → [CATALOG] → RESTORE DATABASE → RECOVER DATABASE → OPEN RESETLOGS
 func (o *OracleBackup) buildFullRestoreScript(opts RestoreOptions) (string, error) {
 	var script strings.Builder
-	script.WriteString("RUN {\n")
-	script.WriteString("  SHUTDOWN IMMEDIATE;\n")
-	script.WriteString("  STARTUP MOUNT;\n")
 
-	// SET UNTIL（PITR 或 SCN）必须先于 RESTORE
-	if err := o.appendUntilClause(&script, opts); err != nil {
-		return "", err
-	}
+	if opts.AutoRestoreControlFile {
+		script.WriteString("RUN {\n")
+		script.WriteString("  STARTUP NOMOUNT;\n")
 
-	// RESTORE DATABASE（可选 FROM TAG）
-	o.appendRestoreDatabase(&script, opts)
+		// 还原控制文件
+		if opts.BackupIdentifier != "" {
+			safeTag := escapeOracleRMANString(opts.BackupIdentifier)
+			fmt.Fprintf(&script, "  RESTORE CONTROLFILE FROM TAG='%s';\n", safeTag)
+		} else {
+			script.WriteString("  RESTORE CONTROLFILE FROM AUTOBACKUP;\n")
+		}
 
-	script.WriteString("  RECOVER DATABASE;\n")
-
-	if !opts.RecoveryPointInTime.IsZero() || opts.RecoverySCN != "" {
-		script.WriteString("  ALTER DATABASE OPEN RESETLOGS;\n")
+		script.WriteString("  ALTER DATABASE MOUNT;\n")
 	} else {
-		script.WriteString("  ALTER DATABASE OPEN;\n")
+		script.WriteString("RUN {\n")
+		script.WriteString("  SHUTDOWN IMMEDIATE;\n")
+		script.WriteString("  STARTUP MOUNT;\n")
 	}
-
-	script.WriteString("}\n")
-	return script.String(), nil
-}
-
-// buildIncrementalRestoreScript 构建增量还原脚本
-// 与全量还原类似，但支持 NOREDO 选项跳过归档日志应用
-// NOREDO 适用于：备库同步、归档日志不可用、仅应用增量备份的场景
-// 支持组合：TAG + PITR/SCN 可同时指定
-func (o *OracleBackup) buildIncrementalRestoreScript(opts RestoreOptions) (string, error) {
-	var script strings.Builder
-	script.WriteString("RUN {\n")
-	script.WriteString("  SHUTDOWN IMMEDIATE;\n")
-	script.WriteString("  STARTUP MOUNT;\n")
 
 	// SET UNTIL（PITR 或 SCN）必须先于 RESTORE
 	if err := o.appendUntilClause(&script, opts); err != nil {
 		return "", err
 	}
 
+	// CATALOG：异机还原时注册备份文件到 RMAN 仓库
+	if opts.CatalogPath != "" {
+		safePath, err := sanitizeBackupPath(opts.CatalogPath)
+		if err != nil {
+			return "", fmt.Errorf("CATALOG 路径校验失败: %w", err)
+		}
+		fmt.Fprintf(&script, "  CATALOG START WITH '%s';\n", escapeOracleRMANString(safePath))
+	}
+
 	// RESTORE DATABASE（可选 FROM TAG）
 	o.appendRestoreDatabase(&script, opts)
 
+	// RECOVER DATABASE（可选 NOREDO）
 	if opts.NoRedo {
 		script.WriteString("  RECOVER DATABASE NOREDO;\n")
 	} else {
 		script.WriteString("  RECOVER DATABASE;\n")
 	}
 
-	script.WriteString("  ALTER DATABASE OPEN RESETLOGS;\n")
+	// OPEN
+	if !opts.RecoveryPointInTime.IsZero() || opts.RecoverySCN != "" || opts.NoRedo || opts.AutoRestoreControlFile {
+		script.WriteString("  ALTER DATABASE OPEN RESETLOGS;\n")
+	} else {
+		script.WriteString("  ALTER DATABASE OPEN;\n")
+	}
 
 	script.WriteString("}\n")
 	return script.String(), nil

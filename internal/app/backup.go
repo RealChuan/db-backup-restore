@@ -22,6 +22,7 @@ type BackupOptions struct {
 	EncryptionKey     string // 加密密钥（需配合 Encryption 使用）
 	ArchiveFromLSN    string // 归档备份起始 LSN（仅达梦: 配合 archive 模式使用）
 	ArchiveUntilLSN   string // 归档备份结束 LSN（仅达梦: 配合 archive 模式使用）
+	RetentionDays     int    // 增量策略保留窗口天数（仅 Oracle 支持，默认 7）
 }
 
 // BackupApp 封装备份操作的应用服务。
@@ -70,6 +71,7 @@ func (a *BackupApp) Run(ctx context.Context, dbType string, opts BackupOptions) 
 		ArchiveLogDest:    archiveLogDir(a.cfg.BaseBackupDir, dbType, typeDir),
 		ArchiveFromLSN:    opts.ArchiveFromLSN,
 		ArchiveUntilLSN:   opts.ArchiveUntilLSN,
+		RetentionDays:     opts.RetentionDays,
 		Timeout:           2 * time.Hour,
 	}
 

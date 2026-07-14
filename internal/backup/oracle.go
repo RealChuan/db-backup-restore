@@ -189,16 +189,16 @@ func (o *OracleBackup) Restore(ctx context.Context, opts RestoreOptions, callbac
 	o.crosscheckAndCleanup(ctx)
 
 	if callback != nil {
-		callback(0, fmt.Sprintf("开始执行 RMAN %s还原...", restoreMode))
+		callback(0, "开始执行 RMAN 还原...")
 	}
 
 	var rmanScript string
 	var scriptErr error
 	switch restoreMode {
+	case RestoreModeIncremental:
+		return nil, errors.New("oracle 不支持 incremental 还原模式，RMAN 的 RESTORE DATABASE 自动处理增量链；如需跳过归档日志，请使用 --restore-mode full --no-redo")
 	case RestoreModeFull:
 		rmanScript, scriptErr = o.buildFullRestoreScript(opts)
-	case RestoreModeIncremental:
-		rmanScript, scriptErr = o.buildIncrementalRestoreScript(opts)
 	case RestoreModeArchive:
 		rmanScript, scriptErr = o.buildArchiveRestoreScript(opts)
 	case RestoreModeControlFile:

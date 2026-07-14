@@ -10,16 +10,18 @@ import (
 )
 
 var (
-	recoveryPointInTime string
-	backupIdentifier    string
-	targetDatabaseName  string
-	remapSchema         string
-	restoreMode         string
-	recoverySCN         string
-	recoveryLSN         string
-	noRedo              bool
-	archiveFromSeq      string
-	archiveUntilSeq     string
+	recoveryPointInTime    string
+	backupIdentifier       string
+	targetDatabaseName     string
+	remapSchema            string
+	restoreMode            string
+	recoverySCN            string
+	recoveryLSN            string
+	noRedo                 bool
+	archiveFromSeq         string
+	archiveUntilSeq        string
+	catalogPath            string
+	autoRestoreControlFile bool
 )
 
 var restoreCmd = &cobra.Command{
@@ -28,8 +30,8 @@ var restoreCmd = &cobra.Command{
 	Long: `执行数据库还原操作，支持按备份文件还原、时间点恢复(PITR)、增量还原、归档还原等。
 
 支持的还原模式(--restore-mode):
-  - full:         全量还原（默认）
-  - incremental:  增量还原（Oracle: RECOVER [NOREDO]; 达梦: RECOVER WITH BACKUPDIR）
+  - full:         全量还原（默认，Oracle RMAN 自动处理增量链）
+  - incremental:  增量还原（仅达梦: RECOVER WITH BACKUPDIR；Oracle 不支持，请使用 --no-redo）
   - archive:      归档还原（Oracle: RESTORE ARCHIVELOG; 达梦: RESTORE ARCHIVE LOG）
   - controlfile:  控制文件还原（仅 Oracle: RESTORE CONTROLFILE FROM AUTOBACKUP）
 
@@ -69,9 +71,17 @@ var restoreCmd = &cobra.Command{
   db-backup-restore restore -c config.json -t oracle --backup-type physical \
     --backup-identifier TAG20260703T120000 --scn 123456789
 
-  # Oracle 增量还原（NOREDO 模式，跳过归档日志应用）
+  # Oracle 还原跳过归档日志（NOREDO 模式）
   db-backup-restore restore -c config.json -t oracle --backup-type physical \
-    --restore-mode incremental --no-redo
+    --no-redo --backup-identifier /backup/oracle
+
+  # Oracle 异机还原（使用 CATALOG 注册备份文件）
+  db-backup-restore restore -c config.json -t oracle --backup-type physical \
+    --catalog-path /backup/oracle --backup-identifier /backup/oracle
+
+  # Oracle 自动恢复控制文件
+  db-backup-restore restore -c config.json -t oracle --backup-type physical \
+    --auto-restore-controlfile --backup-identifier /backup/oracle
 
   # Oracle 归档还原（按序列号范围）
   db-backup-restore restore -c config.json -t oracle --backup-type physical \
@@ -127,6 +137,10 @@ func init() {
 		"归档还原起始序列号（仅 Oracle 支持，配合 --restore-mode archive 使用）")
 	restoreCmd.Flags().StringVar(&archiveUntilSeq, "archive-until-seq", "",
 		"归档还原结束序列号（仅 Oracle 支持，配合 --restore-mode archive 使用）")
+	restoreCmd.Flags().StringVar(&catalogPath, "catalog-path", "",
+		"备份文件注册路径（仅 Oracle 支持，异机还原时使用 CATALOG START WITH 注册备份）")
+	restoreCmd.Flags().BoolVar(&autoRestoreControlFile, "auto-restore-controlfile", false,
+		"自动恢复控制文件（仅 Oracle 支持，在数据库还原流程中先恢复控制文件再还原数据库）")
 
 	rootCmd.AddCommand(restoreCmd)
 }
@@ -137,17 +151,19 @@ func runRestore(ctx context.Context) error {
 		notifier = notify.NewNotifier(notifyWebhook)
 	}
 	result, err := app.NewRestoreApp(appConfig, notifier).Run(ctx, databaseType, app.RestoreOptions{
-		BackupIdentifier:    backupIdentifier,
-		TargetDatabaseName:  targetDatabaseName,
-		RemapSchema:         remapSchema,
-		Type:                backupType,
-		RecoveryPointInTime: recoveryPointInTime,
-		RestoreMode:         restoreMode,
-		RecoverySCN:         recoverySCN,
-		RecoveryLSN:         recoveryLSN,
-		NoRedo:              noRedo,
-		ArchiveFromSeq:      archiveFromSeq,
-		ArchiveUntilSeq:     archiveUntilSeq,
+		BackupIdentifier:       backupIdentifier,
+		TargetDatabaseName:     targetDatabaseName,
+		RemapSchema:            remapSchema,
+		Type:                   backupType,
+		RecoveryPointInTime:    recoveryPointInTime,
+		RestoreMode:            restoreMode,
+		RecoverySCN:            recoverySCN,
+		RecoveryLSN:            recoveryLSN,
+		NoRedo:                 noRedo,
+		ArchiveFromSeq:         archiveFromSeq,
+		ArchiveUntilSeq:        archiveUntilSeq,
+		CatalogPath:            catalogPath,
+		AutoRestoreControlFile: autoRestoreControlFile,
 	})
 	return outputResult(result, err, "restore")
 }

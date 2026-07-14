@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -130,60 +131,6 @@ func TestOracleBackup_BuildFullRestoreScript_InvalidSCN(t *testing.T) {
 	_, err := o.buildFullRestoreScript(opts)
 	if err == nil {
 		t.Error("invalid SCN should return error")
-	}
-}
-
-func TestOracleBackup_BuildIncrementalRestoreScript_Default(t *testing.T) {
-	o := newTestOracleBackup(t)
-	opts := RestoreOptions{RestoreMode: RestoreModeIncremental}
-	script, err := o.buildIncrementalRestoreScript(opts)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if !strings.Contains(script, "RESTORE DATABASE;") {
-		t.Error("incremental restore script missing RESTORE DATABASE")
-	}
-	if !strings.Contains(script, "RECOVER DATABASE;") {
-		t.Error("incremental restore without NoRedo should use RECOVER DATABASE")
-	}
-	if strings.Contains(script, "NOREDO") {
-		t.Error("incremental restore without NoRedo should NOT contain NOREDO")
-	}
-	if !strings.Contains(script, "ALTER DATABASE OPEN RESETLOGS") {
-		t.Error("incremental restore should use RESETLOGS")
-	}
-}
-
-func TestOracleBackup_BuildIncrementalRestoreScript_NoRedo(t *testing.T) {
-	o := newTestOracleBackup(t)
-	opts := RestoreOptions{
-		RestoreMode: RestoreModeIncremental,
-		NoRedo:      true,
-	}
-	script, err := o.buildIncrementalRestoreScript(opts)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if !strings.Contains(script, "RECOVER DATABASE NOREDO") {
-		t.Errorf("incremental restore with NoRedo should contain NOREDO, got: %s", script)
-	}
-}
-
-func TestOracleBackup_BuildIncrementalRestoreScript_WithSCN(t *testing.T) {
-	o := newTestOracleBackup(t)
-	opts := RestoreOptions{
-		RestoreMode: RestoreModeIncremental,
-		RecoverySCN: "999888",
-	}
-	script, err := o.buildIncrementalRestoreScript(opts)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if !strings.Contains(script, "SET UNTIL SCN 999888") {
-		t.Errorf("incremental restore with SCN should contain SET UNTIL SCN, got: %s", script)
 	}
 }
 
@@ -373,14 +320,8 @@ func TestOracleBackup_RestoreDispatch(t *testing.T) {
 			wantAbsent:  "NOREDO",
 		},
 		{
-			name:        "incremental mode",
-			opts:        RestoreOptions{RestoreMode: RestoreModeIncremental},
-			wantContain: "RECOVER DATABASE;",
-			wantAbsent:  "NOREDO",
-		},
-		{
-			name:        "incremental mode with noredo",
-			opts:        RestoreOptions{RestoreMode: RestoreModeIncremental, NoRedo: true},
+			name:        "full mode with noredo",
+			opts:        RestoreOptions{RestoreMode: RestoreModeFull, NoRedo: true},
 			wantContain: "RECOVER DATABASE NOREDO",
 			wantAbsent:  "",
 		},
@@ -405,8 +346,6 @@ func TestOracleBackup_RestoreDispatch(t *testing.T) {
 			switch tt.opts.RestoreMode {
 			case RestoreModeFull:
 				script, err = o.buildFullRestoreScript(tt.opts)
-			case RestoreModeIncremental:
-				script, err = o.buildIncrementalRestoreScript(tt.opts)
 			case RestoreModeArchive:
 				script, err = o.buildArchiveRestoreScript(tt.opts)
 			case RestoreModeControlFile:
@@ -605,5 +544,139 @@ func TestOracleBackup_CrosscheckAndCleanup_ScriptContent(t *testing.T) {
 	}
 	if !strings.Contains(script, "DELETE NOPROMPT OBSOLETE;") {
 		t.Error("幽灵清理脚本应包含 DELETE NOPROMPT OBSOLETE")
+	}
+}
+
+func TestOracleBackup_BuildFullRestoreScript_NoRedo(t *testing.T) {
+	o := newTestOracleBackup(t)
+	opts := RestoreOptions{
+		RestoreMode: RestoreModeFull,
+		NoRedo:      true,
+	}
+	script, err := o.buildFullRestoreScript(opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(script, "RECOVER DATABASE NOREDO") {
+		t.Errorf("full restore with NoRedo should contain NOREDO, got: %s", script)
+	}
+	if !strings.Contains(script, "ALTER DATABASE OPEN RESETLOGS") {
+		t.Error("full restore with NoRedo should use RESETLOGS")
+	}
+}
+
+func TestOracleBackup_BuildFullRestoreScript_WithCatalogPath(t *testing.T) {
+	o := newTestOracleBackup(t)
+	opts := RestoreOptions{
+		RestoreMode: RestoreModeFull,
+		CatalogPath: testAbsBackupDir(),
+	}
+	script, err := o.buildFullRestoreScript(opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(script, "CATALOG START WITH") {
+		t.Errorf("full restore with CatalogPath should contain CATALOG START WITH, got: %s", script)
+	}
+}
+
+func TestOracleBackup_BuildFullRestoreScript_AutoRestoreControlFile(t *testing.T) {
+	o := newTestOracleBackup(t)
+	opts := RestoreOptions{
+		RestoreMode:            RestoreModeFull,
+		AutoRestoreControlFile: true,
+	}
+	script, err := o.buildFullRestoreScript(opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(script, "STARTUP NOMOUNT") {
+		t.Error("auto restore controlfile should use STARTUP NOMOUNT instead of SHUTDOWN")
+	}
+	if !strings.Contains(script, "RESTORE CONTROLFILE FROM AUTOBACKUP") {
+		t.Error("auto restore controlfile should contain RESTORE CONTROLFILE FROM AUTOBACKUP")
+	}
+	if !strings.Contains(script, "ALTER DATABASE MOUNT") {
+		t.Error("auto restore controlfile should contain ALTER DATABASE MOUNT")
+	}
+	if strings.Contains(script, "SHUTDOWN") {
+		t.Error("auto restore controlfile should NOT contain SHUTDOWN")
+	}
+	if !strings.Contains(script, "ALTER DATABASE OPEN RESETLOGS") {
+		t.Error("auto restore controlfile should use RESETLOGS")
+	}
+}
+
+func TestOracleBackup_BuildFullRestoreScript_AutoRestoreControlFileWithTag(t *testing.T) {
+	o := newTestOracleBackup(t)
+	opts := RestoreOptions{
+		RestoreMode:            RestoreModeFull,
+		AutoRestoreControlFile: true,
+		BackupIdentifier:       "TAG20260714T120000",
+	}
+	script, err := o.buildFullRestoreScript(opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(script, "RESTORE CONTROLFILE FROM TAG='TAG20260714T120000'") {
+		t.Errorf("auto restore controlfile with tag should contain RESTORE CONTROLFILE FROM TAG, got: %s", script)
+	}
+	if strings.Contains(script, "RESTORE CONTROLFILE FROM AUTOBACKUP") {
+		t.Error("auto restore controlfile with tag should NOT use AUTOBACKUP")
+	}
+}
+
+func TestOracleBackup_BuildBackupScript_IncrementalWithRetention(t *testing.T) {
+	o := newTestOracleBackup(t)
+	opts := BackupOptions{Mode: BackupModeIncremental, RetentionDays: 14}
+	script, err := o.buildBackupScript(opts, testAbsBackupDir())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(script, "CONFIGURE RETENTION POLICY TO RECOVERY WINDOW OF 14 DAYS") {
+		t.Errorf("incremental backup should contain retention policy config, got: %s", script)
+	}
+}
+
+func TestOracleBackup_BuildBackupScript_FullNoRetention(t *testing.T) {
+	o := newTestOracleBackup(t)
+	opts := BackupOptions{Mode: BackupModeFull, RetentionDays: 14}
+	script, err := o.buildBackupScript(opts, testAbsBackupDir())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if strings.Contains(script, "CONFIGURE RETENTION POLICY") {
+		t.Errorf("full backup should NOT contain retention policy config, got: %s", script)
+	}
+}
+
+func TestOracleBackup_BuildBackupScript_IncrementalDefaultRetention(t *testing.T) {
+	o := newTestOracleBackup(t)
+	opts := BackupOptions{Mode: BackupModeIncremental}
+	script, err := o.buildBackupScript(opts, testAbsBackupDir())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(script, "CONFIGURE RETENTION POLICY TO RECOVERY WINDOW OF 7 DAYS") {
+		t.Errorf("incremental backup with default retention should use 7 days, got: %s", script)
+	}
+}
+
+func TestOracleBackup_Restore_RejectsIncrementalMode(t *testing.T) {
+	o := newTestOracleBackup(t)
+	opts := RestoreOptions{RestoreMode: RestoreModeIncremental}
+	_, err := o.Restore(context.Background(), opts, nil)
+	if err == nil {
+		t.Error("Oracle Restore should reject RestoreModeIncremental")
+	}
+	if !strings.Contains(err.Error(), "incremental") {
+		t.Errorf("error message should mention incremental, got: %v", err)
 	}
 }

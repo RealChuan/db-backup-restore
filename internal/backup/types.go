@@ -50,6 +50,7 @@ type BackupOptions struct {
 	ArchiveFromLSN    string            // 归档备份起始 LSN（仅达梦: BACKUP ARCHIVELOG FROM LSN，配合 archive 模式）
 	ArchiveUntilLSN   string            // 归档备份结束 LSN（仅达梦: BACKUP ARCHIVELOG TO LSN，配合 archive 模式）
 	ExtraParams       map[string]string // 额外参数（MSSQL 使用 database 键指定数据库名）
+	RetentionDays     int               // 增量策略保留窗口天数（仅 Oracle 支持，默认 7，配合 incremental/differential/level0 模式使用）
 	Timeout           time.Duration     // 操作超时时间
 }
 
@@ -92,20 +93,22 @@ type DBConfig = config.DBConfig
 
 // RestoreOptions 还原操作可选参数
 type RestoreOptions struct {
-	TargetDatabaseName  string            // 还原的目标数据库名（MySQL/PostgreSQL/MSSQL 逻辑还原时指定）
-	RemapSchema         string            // 模式映射（仅达梦 dimp: REMAP_SCHEMA=source:target，将源模式数据导入目标模式）
-	RecoveryPointInTime time.Time         // 时间点还原（Oracle/达梦支持，可与 BackupIdentifier 组合）
-	RecoverySCN         string            // 按 SCN 还原（仅 Oracle 支持，可与 BackupIdentifier 组合）
-	RecoveryLSN         string            // 按 LSN 还原（仅达梦支持，配合 archive 模式使用）
-	BackupIdentifier    string            // 备份标识符（Oracle/达梦: TAG 或备份集路径; MySQL/PostgreSQL/MSSQL: 备份文件路径）
-	BackupType          BackupType        // 备份类型: logical/physical
-	RestoreMode         RestoreMode       // 还原模式: full/incremental/archive/controlfile（Oracle/达梦支持）
-	NoRedo              bool              // 增量还原时是否跳过归档日志，即 NOREDO（仅 Oracle 支持）
-	ArchiveFromSeq      string            // 归档还原起始序列号（仅 Oracle 支持，配合 archive 模式使用）
-	ArchiveUntilSeq     string            // 归档还原结束序列号（仅 Oracle 支持，配合 archive 模式使用）
-	ArchiveLogDest      string            // 归档日志目录路径（Oracle/达梦: 从 BaseBackupDir 自动推导，用于 RECOVER WITH ARCHIVEDIR）
-	ExtraParams         map[string]string // 额外参数
-	Timeout             time.Duration     // 操作超时时间
+	TargetDatabaseName     string            // 还原的目标数据库名（MySQL/PostgreSQL/MSSQL 逻辑还原时指定）
+	RemapSchema            string            // 模式映射（仅达梦 dimp: REMAP_SCHEMA=source:target，将源模式数据导入目标模式）
+	RecoveryPointInTime    time.Time         // 时间点还原（Oracle/达梦支持，可与 BackupIdentifier 组合）
+	RecoverySCN            string            // 按 SCN 还原（仅 Oracle 支持，可与 BackupIdentifier 组合）
+	RecoveryLSN            string            // 按 LSN 还原（仅达梦支持，配合 archive 模式使用）
+	BackupIdentifier       string            // 备份标识符（Oracle/达梦: TAG 或备份集路径; MySQL/PostgreSQL/MSSQL: 备份文件路径）
+	BackupType             BackupType        // 备份类型: logical/physical
+	RestoreMode            RestoreMode       // 还原模式: full/incremental/archive/controlfile（Oracle/达梦支持）
+	NoRedo                 bool              // 增量还原时是否跳过归档日志，即 NOREDO（仅 Oracle 支持）
+	ArchiveFromSeq         string            // 归档还原起始序列号（仅 Oracle 支持，配合 archive 模式使用）
+	ArchiveUntilSeq        string            // 归档还原结束序列号（仅 Oracle 支持，配合 archive 模式使用）
+	ArchiveLogDest         string            // 归档日志目录路径（Oracle/达梦: 从 BaseBackupDir 自动推导，用于 RECOVER WITH ARCHIVEDIR）
+	ExtraParams            map[string]string // 额外参数
+	CatalogPath            string            // 备份文件注册路径（仅 Oracle 支持，异机还原时使用 CATALOG START WITH 注册备份）
+	AutoRestoreControlFile bool              // 自动恢复控制文件（仅 Oracle 支持，在数据库还原流程中先恢复控制文件）
+	Timeout                time.Duration     // 操作超时时间
 }
 
 // RestoreResult 还原操作返回结果

@@ -18,6 +18,7 @@ var (
 	encryptionKey     string
 	archiveFromLSN    string
 	archiveUntilLSN   string
+	retentionDays     int
 )
 
 var backupCmd = &cobra.Command{
@@ -92,6 +93,8 @@ func init() {
 		"归档备份起始 LSN（仅达梦: 配合 --backup-mode archive 使用）")
 	backupCmd.Flags().StringVar(&archiveUntilLSN, "archive-until-lsn", "",
 		"归档备份结束 LSN（仅达梦: 配合 --backup-mode archive 使用）")
+	backupCmd.Flags().IntVar(&retentionDays, "retention-days", 7,
+		"增量策略保留窗口天数（仅 Oracle 支持，默认 7，配合 incremental/differential/level0 模式使用）")
 
 	rootCmd.AddCommand(backupCmd)
 }
@@ -111,6 +114,7 @@ func runBackup(ctx context.Context) error {
 		EncryptionKey:     encryptionKey,
 		ArchiveFromLSN:    archiveFromLSN,
 		ArchiveUntilLSN:   archiveUntilLSN,
+		RetentionDays:     retentionDays,
 	})
 	return outputResult(result, err, "backup")
 }
