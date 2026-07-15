@@ -379,7 +379,7 @@ func (d *DamengBackup) backupArchiveAfterFull(ctx context.Context, backupDir, ti
 	}
 }
 
-// executeIncrementalBackup 执行增量备份（差异增量或累积增量）
+// executeIncrementalBackup 执行增量备份（差异增量或累积增量），并在配置了归档目录时自动备份归档日志
 // 通过 disql 联机执行 BACKUP DATABASE INCREMENT 语句
 func (d *DamengBackup) executeIncrementalBackup(ctx context.Context, backupDir, timestamp string, opts BackupOptions, callback ProgressCallback) (string, error) {
 	incrSetName := fmt.Sprintf("DM_INCR_%s", timestamp)
@@ -395,6 +395,11 @@ func (d *DamengBackup) executeIncrementalBackup(ctx context.Context, backupDir, 
 	output, err := d.execSQLStreaming(ctx, script, d.makeLogLineCallback(ctx))
 	if err != nil {
 		return "", fmt.Errorf("增量备份失败: %w, 输出: %s", err, output)
+	}
+
+	// 增量备份后执行归档日志备份（归档目录已配置时），确保 PITR 能力
+	if opts.ArchiveLogDest != "" {
+		d.backupArchiveAfterFull(ctx, backupDir, timestamp, opts, callback)
 	}
 
 	return incrSetPath, nil
@@ -443,9 +448,11 @@ func (d *DamengBackup) buildFullBackupScript(backupSetName, backupSetPath string
 	// disql BACKUP 语法：TO 后为标识符（不加引号），BACKUPSET 后为字符串（单引号）
 	fmt.Fprintf(&script, `BACKUP DATABASE FULL TO %s BACKUPSET '%s'`, safeName, safePath)
 
-	if opts.EnableCompression {
-		if opts.CompressionLevel > 0 {
-			fmt.Fprintf(&script, " COMPRESSED LEVEL %d", opts.CompressionLevel)
+	extra := d.config.GetExtraTyped()
+	if extra.EnableCompression() {
+		compressionLevel := extra.CompressionLevel()
+		if compressionLevel > 0 {
+			fmt.Fprintf(&script, " COMPRESSED LEVEL %d", compressionLevel)
 		} else {
 			script.WriteString(" COMPRESSED")
 		}
@@ -457,8 +464,8 @@ func (d *DamengBackup) buildFullBackupScript(backupSetName, backupSetPath string
 		fmt.Fprintf(&script, ` IDENTIFIED BY "%s"`, safeKey)
 	}
 
-	if opts.ParallelWorkers > 1 {
-		fmt.Fprintf(&script, " PARALLEL %d", opts.ParallelWorkers)
+	if extra.ParallelWorkers() > 1 {
+		fmt.Fprintf(&script, " PARALLEL %d", extra.ParallelWorkers())
 	}
 
 	script.WriteString(";")
@@ -485,9 +492,11 @@ func (d *DamengBackup) buildArchiveBackupScript(archSetName, archSetPath string,
 		fmt.Fprintf(&script, `BACKUP ARCHIVELOG ALL TO %s BACKUPSET '%s'`, safeName, safePath)
 	}
 
-	if opts.EnableCompression {
-		if opts.CompressionLevel > 0 {
-			fmt.Fprintf(&script, " COMPRESSED LEVEL %d", opts.CompressionLevel)
+	extra := d.config.GetExtraTyped()
+	if extra.EnableCompression() {
+		compressionLevel := extra.CompressionLevel()
+		if compressionLevel > 0 {
+			fmt.Fprintf(&script, " COMPRESSED LEVEL %d", compressionLevel)
 		} else {
 			script.WriteString(" COMPRESSED")
 		}
@@ -498,8 +507,8 @@ func (d *DamengBackup) buildArchiveBackupScript(archSetName, archSetPath string,
 		fmt.Fprintf(&script, ` IDENTIFIED BY "%s"`, safeKey)
 	}
 
-	if opts.ParallelWorkers > 1 {
-		fmt.Fprintf(&script, " PARALLEL %d", opts.ParallelWorkers)
+	if extra.ParallelWorkers() > 1 {
+		fmt.Fprintf(&script, " PARALLEL %d", extra.ParallelWorkers())
 	}
 
 	script.WriteString(";")
@@ -529,9 +538,11 @@ func (d *DamengBackup) buildIncrementalBackupScript(backupSetName, backupSetPath
 		fmt.Fprintf(&script, `BACKUP DATABASE INCREMENT WITH BACKUPDIR '%s' TO %s BACKUPSET '%s'`, safeBaseDir, safeName, safePath)
 	}
 
-	if opts.EnableCompression {
-		if opts.CompressionLevel > 0 {
-			fmt.Fprintf(&script, " COMPRESSED LEVEL %d", opts.CompressionLevel)
+	extra := d.config.GetExtraTyped()
+	if extra.EnableCompression() {
+		compressionLevel := extra.CompressionLevel()
+		if compressionLevel > 0 {
+			fmt.Fprintf(&script, " COMPRESSED LEVEL %d", compressionLevel)
 		} else {
 			script.WriteString(" COMPRESSED")
 		}
@@ -542,8 +553,8 @@ func (d *DamengBackup) buildIncrementalBackupScript(backupSetName, backupSetPath
 		fmt.Fprintf(&script, ` IDENTIFIED BY "%s"`, safeKey)
 	}
 
-	if opts.ParallelWorkers > 1 {
-		fmt.Fprintf(&script, " PARALLEL %d", opts.ParallelWorkers)
+	if extra.ParallelWorkers() > 1 {
+		fmt.Fprintf(&script, " PARALLEL %d", extra.ParallelWorkers())
 	}
 
 	script.WriteString(";")
@@ -664,8 +675,6 @@ func (d *DamengBackup) executePhysicalRestore(ctx context.Context, backupSetPath
 // dmIniPath: dm.ini 文件路径（dmrman 语法要求使用 ini 路径而非数据目录路径）
 func (d *DamengBackup) buildRestoreScriptByMode(backupSetPath, dmIniPath string, opts RestoreOptions) string {
 	switch opts.RestoreMode {
-	case RestoreModeIncremental:
-		return d.buildIncrementalRestoreScript(backupSetPath, dmIniPath, opts)
 	case RestoreModeArchive:
 		return d.buildArchiveRestoreScript(backupSetPath, dmIniPath, opts)
 	default: // RestoreModeFull or empty
@@ -673,8 +682,11 @@ func (d *DamengBackup) buildRestoreScriptByMode(backupSetPath, dmIniPath string,
 	}
 }
 
-// buildFullRestoreScript 构建全量还原脚本（通过 dmrman 脱机执行）
-// 流程：RESTORE DATABASE → RECOVER DATABASE [UNTIL TIME] → UPDATE DB_MAGIC
+// buildFullRestoreScript 构建还原脚本（通过 dmrman 脱机执行）
+// 统一还原流程，自动处理增量备份链和归档日志：
+//
+//	RESTORE DATABASE → RECOVER DATABASE WITH BACKUPDIR → RECOVER DATABASE [WITH ARCHIVEDIR] [UNTIL TIME] → UPDATE DB_MAGIC
+//
 // dmIniPath: dm.ini 文件路径（dmrman 语法要求使用 ini 路径而非数据目录路径）
 func (d *DamengBackup) buildFullRestoreScript(backupSetPath, dmIniPath string, opts RestoreOptions) string {
 	var script strings.Builder
@@ -685,7 +697,12 @@ func (d *DamengBackup) buildFullRestoreScript(backupSetPath, dmIniPath string, o
 	// RESTORE DATABASE
 	fmt.Fprintf(&script, `RESTORE DATABASE '%s' FROM BACKUPSET '%s';`, safeDmIni, safeBackupSet)
 
-	// RECOVER DATABASE
+	// RECOVER DATABASE WITH BACKUPDIR（自动查找并应用增量备份集，无增量备份时不会报错）
+	backupDir := filepath.Dir(backupSetPath)
+	safeBackupDir := escapeDamengRMANString(backupDir)
+	fmt.Fprintf(&script, "\nRECOVER DATABASE '%s' WITH BACKUPDIR '%s';", safeDmIni, safeBackupDir)
+
+	// RECOVER DATABASE WITH ARCHIVEDIR（应用归档日志）
 	archDir := opts.ArchiveLogDest
 	if !opts.RecoveryPointInTime.IsZero() {
 		timeStr := opts.RecoveryPointInTime.Format("2006-01-02 15:04:05")
@@ -702,43 +719,6 @@ func (d *DamengBackup) buildFullRestoreScript(backupSetPath, dmIniPath string, o
 		} else {
 			fmt.Fprintf(&script, "\nRECOVER DATABASE '%s' FROM BACKUPSET '%s';", safeDmIni, safeBackupSet)
 		}
-	}
-
-	// UPDATE DB_MAGIC
-	fmt.Fprintf(&script, "\nRECOVER DATABASE '%s' UPDATE DB_MAGIC;", safeDmIni)
-
-	return script.String()
-}
-
-// buildIncrementalRestoreScript 构建增量还原脚本（通过 dmrman 脱机执行）
-// 流程：RESTORE DATABASE → RECOVER DATABASE WITH BACKUPDIR → RECOVER DATABASE WITH ARCHIVEDIR → UPDATE DB_MAGIC
-func (d *DamengBackup) buildIncrementalRestoreScript(backupSetPath, dmIniPath string, opts RestoreOptions) string {
-	var script strings.Builder
-
-	safeBackupSet := escapeDamengRMANString(backupSetPath)
-	safeDmIni := escapeDamengRMANString(dmIniPath)
-
-	// RESTORE DATABASE（从全量备份集还原数据文件）
-	fmt.Fprintf(&script, `RESTORE DATABASE '%s' FROM BACKUPSET '%s';`, safeDmIni, safeBackupSet)
-
-	// RECOVER DATABASE WITH BACKUPDIR（自动查找并应用增量备份集）
-	backupDir := filepath.Dir(backupSetPath)
-	safeBackupDir := escapeDamengRMANString(backupDir)
-	fmt.Fprintf(&script, "\nRECOVER DATABASE '%s' WITH BACKUPDIR '%s';", safeDmIni, safeBackupDir)
-
-	// RECOVER DATABASE WITH ARCHIVEDIR（应用归档日志）
-	archDir := opts.ArchiveLogDest
-	if !opts.RecoveryPointInTime.IsZero() {
-		timeStr := opts.RecoveryPointInTime.Format("2006-01-02 15:04:05")
-		if archDir != "" {
-			safeArchDir := escapeDamengRMANString(archDir)
-			fmt.Fprintf(&script, "\nRECOVER DATABASE '%s' WITH ARCHIVEDIR '%s' UNTIL TIME '%s';", safeDmIni, safeArchDir, timeStr)
-		} else {
-			fmt.Fprintf(&script, "\nRECOVER DATABASE '%s' UNTIL TIME '%s';", safeDmIni, timeStr)
-		}
-	} else if archDir != "" {
-		safeArchDir := escapeDamengRMANString(archDir)
-		fmt.Fprintf(&script, "\nRECOVER DATABASE '%s' WITH ARCHIVEDIR '%s';", safeDmIni, safeArchDir)
 	}
 
 	// UPDATE DB_MAGIC

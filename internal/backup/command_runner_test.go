@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -41,6 +42,9 @@ func TestRunCapture_Failure(t *testing.T) {
 }
 
 func TestRunCapture_WithEnv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sh not available on Windows")
+	}
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh not found")
 	}
@@ -118,7 +122,7 @@ func TestMaskCmdString(t *testing.T) {
 		{
 			name: "password flag",
 			cmd:  "mysqldump -u root --password=secret -h localhost db",
-			want: "mysqldump -u root --p*** -h localhost db", // NOTE: -p regex over-matches after --password=*** replacement; pre-existing MaskPassword bug
+			want: "mysqldump -u root --password=*** -h localhost db",
 		},
 		{
 			name: "short password",

@@ -26,20 +26,17 @@
 
 执行数据库备份，支持逻辑备份和物理备份两种类型。
 
-| 参数              | 说明                                                                                                                                        |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| Type              | 备份类型：`logical`（逻辑）或 `physical`（物理）                                                                                            |
-| Mode              | 备份模式：`full`（全量）、`incremental`（增量）、`differential`（差异）、`level0`（Level 0 增量基础，仅 Oracle）、`archive`（独立归档日志） |
-| EnableCompression | 是否启用压缩备份                                                                                                                            |
-| CompressionLevel  | 压缩级别，仅物理备份生效（0=不指定级别，使用工具默认；达梦 1-9；Oracle: 1-3=LOW, 4-6=MEDIUM, 7-9=HIGH；其他数据库忽略）                     |
-| Encryption        | 是否启用加密（物理备份，Oracle/达梦支持）                                                                                                   |
-| EncryptionKey     | 加密密钥（需配合 Encryption 使用）                                                                                                          |
-| TargetPath        | 备份目标路径                                                                                                                                |
-| ArchiveLogDest    | 归档日志目标路径（Oracle/达梦，从 BaseBackupDir 自动推导）                                                                                  |
-| ParallelWorkers   | 并行工作线程数（默认 2，物理备份生效）                                                                                                      |
-| ArchiveFromLSN    | 归档备份起始 LSN（仅达梦，配合 `archive` 模式使用）                                                                                         |
-| ArchiveUntilLSN   | 归档备份结束 LSN（仅达梦，配合 `archive` 模式使用）                                                                                         |
-| Timeout           | 超时时间                                                                                                                                    |
+| 参数            | 说明                                                                                                                                        |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Type            | 备份类型：`logical`（逻辑）或 `physical`（物理）                                                                                            |
+| Mode            | 备份模式：`full`（全量）、`incremental`（增量）、`differential`（差异）、`level0`（Level 0 增量基础，仅 Oracle）、`archive`（独立归档日志） |
+| Encryption      | 是否启用加密（物理备份，Oracle/达梦支持）                                                                                                   |
+| EncryptionKey   | 加密密钥（需配合 Encryption 使用）                                                                                                          |
+| TargetPath      | 备份目标路径                                                                                                                                |
+| ArchiveLogDest  | 归档日志目标路径（Oracle/达梦，从 BaseBackupDir 自动推导）                                                                                  |
+| ArchiveFromLSN  | 归档备份起始 LSN（仅达梦，配合 `archive` 模式使用）                                                                                         |
+| ArchiveUntilLSN | 归档备份结束 LSN（仅达梦，配合 `archive` 模式使用）                                                                                         |
+| Timeout         | 超时时间                                                                                                                                    |
 
 **注意事项**：
 
@@ -47,7 +44,7 @@
 - 达梦逻辑备份支持全库 (FULL) 和按模式 (SCHEMAS) 导出
 - 达梦物理备份支持全量、增量、累积增量和归档日志备份
 - 物理备份会备份整个数据库实例，不支持单库备份
-- 压缩功能：Oracle/达梦/PostgreSQL 物理备份生效；MySQL 逻辑备份不支持压缩；达梦逻辑备份支持压缩（dexp COMPRESS）
+- 压缩/并行/保留策略：通过 Extra 配置项控制（`ENABLE_COMPRESSION`、`COMPRESSION_LEVEL`、`PARALLEL_WORKERS`、`RETENTION_DAYS`），详见各数据库 Extra 参数表
 - Oracle 备份前若数据库未开启归档模式，会自动启用归档模式
 - 达梦归档备份支持按 LSN 范围备份（`ArchiveFromLSN`/`ArchiveUntilLSN`）
 
@@ -57,22 +54,22 @@
 
 执行数据库还原，根据备份标识符自动判断还原方式。
 
-| 参数                | 说明                                                                                                     |
-| ------------------- | -------------------------------------------------------------------------------------------------------- |
-| BackupIdentifier    | 备份标识符（Oracle/达梦: TAG 或备份集路径; MySQL/PostgreSQL/MSSQL: 文件路径）                            |
-| TargetDatabaseName  | 目标数据库名（MySQL/PostgreSQL/MSSQL 逻辑还原时可指定还原到新数据库）                                    |
-| RemapSchema         | 模式映射，格式: `source:target`（仅达梦 dimp 支持，将源模式数据导入目标模式）                            |
-| Overwrite           | 是否覆盖现有数据库                                                                                       |
-| RecoveryPointInTime | 时间点还原的目标时间（Oracle/达梦支持，可与 BackupIdentifier 组合）                                      |
-| RecoverySCN         | 按 SCN 还原（仅 Oracle 支持，可与 BackupIdentifier 组合）                                                |
-| RecoveryLSN         | 按 LSN 还原（仅达梦支持，配合 `archive` 模式使用）                                                       |
-| RestoreMode         | 还原模式：`full`（全量）、`incremental`（增量）、`archive`（归档）、`controlfile`（控制文件，仅 Oracle） |
-| BackupType          | 备份类型：`logical` 或 `physical`                                                                        |
-| NoRedo              | 增量还原时跳过归档日志应用，即 NOREDO（仅 Oracle 支持）                                                  |
-| ArchiveFromSeq      | 归档还原起始序列号（仅 Oracle，配合 `archive` 模式使用）                                                 |
-| ArchiveUntilSeq     | 归档还原结束序列号（仅 Oracle，配合 `archive` 模式使用）                                                 |
-| ArchiveLogDest      | 归档日志目录路径（Oracle/达梦: 从 BaseBackupDir 自动推导，用于 RECOVER WITH ARCHIVEDIR）                 |
-| Timeout             | 超时时间                                                                                                 |
+| 参数                | 说明                                                                                     |
+| ------------------- | ---------------------------------------------------------------------------------------- |
+| BackupIdentifier    | 备份标识符（Oracle/达梦: TAG 或备份集路径; MySQL/PostgreSQL/MSSQL: 文件路径）            |
+| TargetDatabaseName  | 目标数据库名（MySQL/PostgreSQL/MSSQL 逻辑还原时可指定还原到新数据库）                    |
+| RemapSchema         | 模式映射，格式: `source:target`（仅达梦 dimp 支持，将源模式数据导入目标模式）            |
+| Overwrite           | 是否覆盖现有数据库                                                                       |
+| RecoveryPointInTime | 时间点还原的目标时间（Oracle/达梦支持，可与 BackupIdentifier 组合）                      |
+| RecoverySCN         | 按 SCN 还原（仅 Oracle 支持，可与 BackupIdentifier 组合）                                |
+| RecoveryLSN         | 按 LSN 还原（仅达梦支持，配合 `archive` 模式使用）                                       |
+| RestoreMode         | 还原模式：`full`（全量，默认）、`archive`（归档）、`controlfile`（控制文件，仅 Oracle）  |
+| BackupType          | 备份类型：`logical` 或 `physical`                                                        |
+| NoRedo              | 还原时跳过归档日志应用，即 NOREDO（仅 Oracle 支持）                                      |
+| ArchiveFromSeq      | 归档还原起始序列号（仅 Oracle，配合 `archive` 模式使用）                                 |
+| ArchiveUntilSeq     | 归档还原结束序列号（仅 Oracle，配合 `archive` 模式使用）                                 |
+| ArchiveLogDest      | 归档日志目录路径（Oracle/达梦: 从 BaseBackupDir 自动推导，用于 RECOVER WITH ARCHIVEDIR） |
+| Timeout             | 超时时间                                                                                 |
 
 **注意事项**：
 
@@ -288,16 +285,13 @@
 
 ### backup 子命令参数
 
-| 参数                   | 说明                                                                              |
-| ---------------------- | --------------------------------------------------------------------------------- |
-| `--backup-mode`        | 备份模式：`full`、`incremental`、`differential`、`level0`、`archive`（默认 full） |
-| `--parallel-workers`   | 并行工作线程数（默认 2，物理备份生效）                                            |
-| `--enable-compression` | 是否启用压缩（默认 true）                                                         |
-| `--compression-level`  | 压缩级别（0=默认; 达梦 1-9; Oracle 1-3=LOW, 4-6=MEDIUM, 7-9=HIGH）                |
-| `--encryption`         | 是否启用加密（物理备份，Oracle/达梦支持）                                         |
-| `--encryption-key`     | 加密密钥（需配合 `--encryption` 使用）                                            |
-| `--archive-from-lsn`   | 归档备份起始 LSN（仅达梦，配合 `--backup-mode archive` 使用）                     |
-| `--archive-until-lsn`  | 归档备份结束 LSN（仅达梦，配合 `--backup-mode archive` 使用）                     |
+| 参数                  | 说明                                                                              |
+| --------------------- | --------------------------------------------------------------------------------- |
+| `--backup-mode`       | 备份模式：`full`、`incremental`、`differential`、`level0`、`archive`（默认 full） |
+| `--encryption`        | 是否启用加密（物理备份，Oracle/达梦支持）                                         |
+| `--encryption-key`    | 加密密钥（需配合 `--encryption` 使用）                                            |
+| `--archive-from-lsn`  | 归档备份起始 LSN（仅达梦，配合 `--backup-mode archive` 使用）                     |
+| `--archive-until-lsn` | 归档备份结束 LSN（仅达梦，配合 `--backup-mode archive` 使用）                     |
 
 ### restore 子命令参数
 
@@ -306,11 +300,11 @@
 | `--backup-identifier`      | 备份标识符（Oracle/达梦: TAG 或备份集路径; MySQL/PostgreSQL/MSSQL: 文件路径） |
 | `--target-database`        | 还原的目标数据库名（MySQL/PostgreSQL/MSSQL 逻辑还原时指定）                   |
 | `--remap-schema`           | 模式映射，格式: `source:target`（仅达梦 dimp 支持）                           |
-| `--restore-mode`           | 还原模式：`full`、`incremental`、`archive`、`controlfile`（默认 full）        |
+| `--restore-mode`           | 还原模式：`full`、`archive`、`controlfile`（默认 full）                       |
 | `--recovery-point-in-time` | 时间点还原，格式: `2006-01-02T15:04:05`（Oracle/达梦支持）                    |
 | `--scn`                    | 按 SCN 还原（仅 Oracle 支持）                                                 |
 | `--lsn`                    | 按 LSN 还原（仅达梦支持，配合 `--restore-mode archive` 使用）                 |
-| `--no-redo`                | 增量还原时跳过归档日志应用，即 NOREDO（仅 Oracle 支持）                       |
+| `--no-redo`                | 还原时跳过归档日志应用，即 NOREDO（仅 Oracle 支持）                           |
 | `--archive-from-seq`       | 归档还原起始序列号（仅 Oracle，配合 `--restore-mode archive` 使用）           |
 | `--archive-until-seq`      | 归档还原结束序列号（仅 Oracle，配合 `--restore-mode archive` 使用）           |
 
@@ -368,6 +362,10 @@
 | `ORACLE_HOME`        | Oracle 安装目录                                                                                           | **是** |
 | `ORACLE_SID`         | Oracle 实例标识                                                                                           | **是** |
 | `AUTO_GHOST_CLEANUP` | 是否在备份/还原前自动执行 RMAN 幽灵对象清理（CROSSCHECK + DELETE EXPIRED + DELETE OBSOLETE），默认 `true` | 否     |
+| `RETENTION_DAYS`     | 增量备份保留窗口天数（默认 7，仅增量模式生效，控制 RMAN RECOVERY WINDOW）                                 | 否     |
+| `PARALLEL_WORKERS`   | 并行工作线程数（默认 2，物理备份生效）                                                                    | 否     |
+| `ENABLE_COMPRESSION` | 是否启用压缩备份（默认 `true`）                                                                           | 否     |
+| `COMPRESSION_LEVEL`  | 压缩级别（0=默认; 1-3=LOW, 4-6=MEDIUM, 7-9=HIGH）                                                         | 否     |
 
 ### SQL Server 专用
 
@@ -384,5 +382,9 @@
 | `DM_INSTANCE`        | 达梦实例名，多实例场景需指定                     | 否              |
 | `DM_DATA_DIR`        | 数据目录路径，物理备份还原时需要                 | 物理备份时必填  |
 | `AUTO_GHOST_CLEANUP` | 是否在物理备份前自动清理归档目录中的幽灵归档文件 | 否，默认 `true` |
+| `RETENTION_DAYS`     | 备份保留天数（仅增量模式生效）                   | 否              |
+| `PARALLEL_WORKERS`   | 并行工作线程数（默认 2，物理备份生效）           | 否              |
+| `ENABLE_COMPRESSION` | 是否启用压缩备份（默认 `true`）                  | 否              |
+| `COMPRESSION_LEVEL`  | 压缩级别（0=默认; 1-9）                          | 否              |
 
 > **归档目录**：无需配置，从 `BaseBackupDir` 自动推导为 `{BaseBackupDir}/dameng/archivelog`，用于归档模式启用和 PITR 还原。

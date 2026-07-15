@@ -31,12 +31,19 @@ type Config struct {
 	AddCaller     bool   // 是否添加调用者信息
 }
 
+// Config 默认值常量，避免 goconst 重复字符串告警
+const (
+	defaultLevel  = "info"
+	defaultOutput = "console"
+	defaultFormat = "text"
+)
+
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() *Config {
 	return &Config{
-		Level:         "info",
-		Output:        "console",
-		Format:        "text",
+		Level:         defaultLevel,
+		Output:        defaultOutput,
+		Format:        defaultFormat,
 		LogFile:       "",
 		AuditLogFile:  "",
 		MaxFileSizeMB: 100,
@@ -516,11 +523,19 @@ func newFileHandler(cfg *Config, w io.Writer, level slog.Level) slog.Handler {
 // Level and color helpers
 // ---------------------------------------------------------------------------
 
+// 日志级别字符串常量，避免 goconst 重复字符串告警
+const (
+	levelStrDebug = "DEBUG"
+	levelStrInfo  = "INFO"
+	levelStrWarn  = "WARN"
+	levelStrError = "ERROR"
+)
+
 func parseLevel(s string) (slog.Level, error) {
 	switch strings.ToLower(s) {
 	case "debug":
 		return slog.LevelDebug, nil
-	case "info":
+	case defaultLevel:
 		return slog.LevelInfo, nil
 	case "warn":
 		return slog.LevelWarn, nil
@@ -534,13 +549,13 @@ func parseLevel(s string) (slog.Level, error) {
 func levelString(l slog.Level) string {
 	switch {
 	case l >= slog.LevelError:
-		return "ERROR"
+		return levelStrError
 	case l >= slog.LevelWarn:
-		return "WARN"
+		return levelStrWarn
 	case l >= slog.LevelInfo:
-		return "INFO"
+		return levelStrInfo
 	default:
-		return "DEBUG"
+		return levelStrDebug
 	}
 }
 
@@ -620,53 +635,53 @@ func WithTrace(ctx context.Context, logger *slog.Logger) *slog.Logger {
 
 // Debug logs at debug level.
 func Debug(msg string, args ...any) {
-	logAt(context.Background(), slog.LevelDebug, 2, msg, args...)
+	logAt(context.Background(), slog.LevelDebug, 3, msg, args...)
 }
 
 // Info logs at info level.
 func Info(msg string, args ...any) {
-	logAt(context.Background(), slog.LevelInfo, 2, msg, args...)
+	logAt(context.Background(), slog.LevelInfo, 3, msg, args...)
 }
 
 // Warn logs at warn level.
 func Warn(msg string, args ...any) {
-	logAt(context.Background(), slog.LevelWarn, 2, msg, args...)
+	logAt(context.Background(), slog.LevelWarn, 3, msg, args...)
 }
 
 // Error logs at error level.
 func Error(msg string, args ...any) {
-	logAt(context.Background(), slog.LevelError, 2, msg, args...)
+	logAt(context.Background(), slog.LevelError, 3, msg, args...)
 }
 
 // Fatal logs at error level and exits.
 func Fatal(msg string, args ...any) {
-	logAt(context.Background(), slog.LevelError, 2, msg, args...)
+	logAt(context.Background(), slog.LevelError, 3, msg, args...)
 	os.Exit(1)
 }
 
 // DebugCtx logs at debug level with context.
 func DebugCtx(ctx context.Context, msg string, args ...any) {
-	logAt(ctx, slog.LevelDebug, 2, msg, args...)
+	logAt(ctx, slog.LevelDebug, 3, msg, args...)
 }
 
 // InfoCtx logs at info level with context.
 func InfoCtx(ctx context.Context, msg string, args ...any) {
-	logAt(ctx, slog.LevelInfo, 2, msg, args...)
+	logAt(ctx, slog.LevelInfo, 3, msg, args...)
 }
 
 // WarnCtx logs at warn level with context.
 func WarnCtx(ctx context.Context, msg string, args ...any) {
-	logAt(ctx, slog.LevelWarn, 2, msg, args...)
+	logAt(ctx, slog.LevelWarn, 3, msg, args...)
 }
 
 // ErrorCtx logs at error level with context.
 func ErrorCtx(ctx context.Context, msg string, args ...any) {
-	logAt(ctx, slog.LevelError, 2, msg, args...)
+	logAt(ctx, slog.LevelError, 3, msg, args...)
 }
 
 // FatalCtx logs at error level with context and then exits.
 func FatalCtx(ctx context.Context, msg string, args ...any) {
-	logAt(ctx, slog.LevelError, 2, msg, args...)
+	logAt(ctx, slog.LevelError, 3, msg, args...)
 	os.Exit(1)
 }
 
@@ -726,70 +741,4 @@ func AuditLog(action, dbType, status string, details ...string) {
 	}
 
 	al.LogAttrs(context.Background(), slog.LevelInfo, "audit", attrs...)
-}
-
-// ---------------------------------------------------------------------------
-// Command logging helpers
-// ---------------------------------------------------------------------------
-
-// FormatCommandOutput formats command output in a box-drawing style for
-// display. It filters empty lines and separator lines, and truncates output
-// longer than 30 lines.
-func FormatCommandOutput(cmd, output string) string {
-	var buf bytes.Buffer
-	lines := strings.Split(output, "\n")
-
-	filteredLines := make([]string, 0, len(lines))
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed != "" && !strings.Contains(trimmed, "==========") {
-			filteredLines = append(filteredLines, trimmed)
-		}
-	}
-
-	if len(filteredLines) == 0 {
-		return ""
-	}
-
-	header := "┌─────────────────────────────────────────────────────────────"
-	footer := "└─────────────────────────────────────────────────────────────"
-
-	buf.WriteString(header + "\n")
-	buf.WriteString("│ COMMAND: " + cmd + "\n")
-	buf.WriteString("│─────────────────────────────────────────────────────────────\n")
-
-	if len(filteredLines) <= 30 {
-		for _, line := range filteredLines {
-			buf.WriteString("│ " + line + "\n")
-		}
-	} else {
-		for i := range 10 {
-			buf.WriteString("│ " + filteredLines[i] + "\n")
-		}
-		buf.WriteString("│ ... (省略 " + strconv.Itoa(len(filteredLines)-20) + " 行)\n")
-		for i := len(filteredLines) - 10; i < len(filteredLines); i++ {
-			buf.WriteString("│ " + filteredLines[i] + "\n")
-		}
-	}
-
-	buf.WriteString(footer + "\n")
-	return buf.String()
-}
-
-// LogCommand logs command execution output. If isError is true, it logs at
-// error level; otherwise at debug level.
-func LogCommand(cmd, output string, isError bool) {
-	formattedOutput := FormatCommandOutput(cmd, output)
-	level := slog.LevelDebug
-	msg := "命令执行输出"
-	if isError {
-		level = slog.LevelError
-		msg = "命令执行失败"
-	}
-	logAt(context.Background(), level, 2, msg, "cmd_output", formattedOutput)
-}
-
-// LogCommandInfo logs the start of a command execution.
-func LogCommandInfo(cmd string) {
-	logAt(context.Background(), slog.LevelDebug, 2, fmt.Sprintf("[命令执行] %s", cmd))
 }

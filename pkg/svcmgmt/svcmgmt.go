@@ -14,6 +14,7 @@ import (
 const (
 	scActionStart = "start"
 	scActionStop  = "stop"
+	windowsOS     = "windows"
 )
 
 // StartWindowsService 启动 Windows 服务
@@ -76,21 +77,10 @@ func StopWindowsService(ctx context.Context, serviceName string) error {
 	return fmt.Errorf("无法停止 Windows 服务 [%s]: %w, output: %s", serviceName, lastErr, lastOutput)
 }
 
-// IsWindowsServiceRunning 检查 Windows 服务是否正在运行
-func IsWindowsServiceRunning(ctx context.Context, serviceName string) bool {
-	cmd := exec.CommandContext(ctx, "sc", "query", serviceName)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return false
-	}
-	return strings.Contains(string(output), "RUNNING")
-}
-
 // IsWindowsServiceStopped 检查 Windows 服务是否已完全停止
-// 与 IsWindowsServiceRunning 不同，此函数检查 STOPPED 状态，
-// 而非简单取反 RUNNING 状态。这避免了 STOP_PENDING 状态下的假阳性：
+// 检查 STOPPED 状态而非简单取反 RUNNING 状态，避免 STOP_PENDING 状态下的假阳性：
 // 服务从 RUNNING → STOP_PENDING → STOPPED 过渡期间，
-// !IsWindowsServiceRunning 在 STOP_PENDING 时就返回 true（错误），
+// 若仅检查非 RUNNING，则在 STOP_PENDING 时就返回 true（错误），
 // 而 IsWindowsServiceStopped 在 STOP_PENDING 时返回 false（正确）。
 func IsWindowsServiceStopped(ctx context.Context, serviceName string) bool {
 	cmd := exec.CommandContext(ctx, "sc", "query", serviceName)
@@ -148,7 +138,7 @@ type ServiceConfig struct {
 
 // IsWindows 判断当前操作系统是否为 Windows
 func IsWindows() bool {
-	return runtime.GOOS == "windows"
+	return runtime.GOOS == windowsOS
 }
 
 // StopService 根据配置停止服务：优先使用自定义命令，否则使用系统服务管理

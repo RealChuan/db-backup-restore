@@ -73,7 +73,7 @@ func (m *MSSQLBackup) buildServerArg() string {
 }
 
 // backupLogicalSingle 备份单个数据库
-func (m *MSSQLBackup) backupLogicalSingle(ctx context.Context, opts BackupOptions, backupDir, databaseName string, callback ProgressCallback) (*BackupResult, error) {
+func (m *MSSQLBackup) backupLogicalSingle(ctx context.Context, backupDir, databaseName string, callback ProgressCallback) (*BackupResult, error) {
 	startTime := time.Now()
 	result := &BackupResult{
 		StartTime: startTime,
@@ -91,7 +91,7 @@ func (m *MSSQLBackup) backupLogicalSingle(ctx context.Context, opts BackupOption
 		callback(0, fmt.Sprintf("开始备份数据库 %s...", databaseName))
 	}
 
-	sqlScript, err := m.buildBackupScript(opts, backupDir, databaseName, backupPath)
+	sqlScript, err := m.buildBackupScript(backupDir, databaseName, backupPath)
 	if err != nil {
 		return nil, fmt.Errorf("构建备份脚本失败: %w", err)
 	}
@@ -119,7 +119,7 @@ func (m *MSSQLBackup) backupLogicalSingle(ctx context.Context, opts BackupOption
 }
 
 // backupLogicalMultiple 备份多个数据库
-func (m *MSSQLBackup) backupLogicalMultiple(ctx context.Context, opts BackupOptions, backupDir string, databases []string, callback ProgressCallback) (*BackupResult, error) {
+func (m *MSSQLBackup) backupLogicalMultiple(ctx context.Context, backupDir string, databases []string, callback ProgressCallback) (*BackupResult, error) {
 	startTime := time.Now()
 	result := &BackupResult{
 		StartTime: startTime,
@@ -140,7 +140,7 @@ func (m *MSSQLBackup) backupLogicalMultiple(ctx context.Context, opts BackupOpti
 		}
 
 		// 复用 backupLogicalSingle
-		singleResult, err := m.backupLogicalSingle(ctx, opts, backupDir, dbName, nil)
+		singleResult, err := m.backupLogicalSingle(ctx, backupDir, dbName, nil)
 		if err != nil {
 			logging.WarnCtx(ctx, "备份数据库失败，继续备份其他数据库", "db", dbName, "error", err)
 			continue
@@ -167,7 +167,7 @@ func (m *MSSQLBackup) backupLogicalMultiple(ctx context.Context, opts BackupOpti
 }
 
 // backupLogicalAll 备份所有用户数据库
-func (m *MSSQLBackup) backupLogicalAll(ctx context.Context, opts BackupOptions, backupDir string, callback ProgressCallback) (*BackupResult, error) {
+func (m *MSSQLBackup) backupLogicalAll(ctx context.Context, backupDir string, callback ProgressCallback) (*BackupResult, error) {
 	databases, err := m.ListDatabases(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("获取数据库列表失败: %w", err)
@@ -178,7 +178,7 @@ func (m *MSSQLBackup) backupLogicalAll(ctx context.Context, opts BackupOptions, 
 	}
 
 	// 复用 backupLogicalMultiple
-	return m.backupLogicalMultiple(ctx, opts, backupDir, databases, callback)
+	return m.backupLogicalMultiple(ctx, backupDir, databases, callback)
 }
 
 // checkDatabaseExists 检查指定数据库是否存在
@@ -200,7 +200,7 @@ func (m *MSSQLBackup) checkDatabaseExists(ctx context.Context, databaseName stri
 }
 
 // buildBackupScript 根据选项生成备份脚本
-func (m *MSSQLBackup) buildBackupScript(opts BackupOptions, _ string, databaseName, backupPath string) (string, error) {
+func (m *MSSQLBackup) buildBackupScript(_ string, databaseName, backupPath string) (string, error) {
 	if err := sanitizeDatabaseName(databaseName); err != nil {
 		return "", fmt.Errorf("无效的数据库名: %w", err)
 	}
@@ -212,7 +212,7 @@ func (m *MSSQLBackup) buildBackupScript(opts BackupOptions, _ string, databaseNa
 	var script strings.Builder
 	fmt.Fprintf(&script, "BACKUP DATABASE [%s] TO DISK = N'%s' WITH ", databaseName, cleanPath)
 
-	if opts.EnableCompression {
+	if m.config.GetExtraTyped().EnableCompression() {
 		script.WriteString("COMPRESSION, ")
 	}
 

@@ -39,9 +39,13 @@
       "extra": {
         "ORACLE_HOME": "c:\\windows.x64_193000_db_home",
         "ORACLE_SID": "ORCL",
-        "AUTO_GHOST_CLEANUP": "true"
+        "AUTO_GHOST_CLEANUP": "true",
+        "RETENTION_DAYS": "7",
+        "PARALLEL_WORKERS": "2",
+        "COMPRESSION_LEVEL": "0",
+        "ENABLE_COMPRESSION": "true"
       },
-      "_extra_help": "ORACLE_HOME: Oracle安装目录(必填); ORACLE_SID: Oracle实例标识(必填)"
+      "_extra_help": "ORACLE_HOME: Oracle安装目录(必填); ORACLE_SID: Oracle实例标识(必填); AUTO_GHOST_CLEANUP: 备份/还原前自动幽灵清理(可选,默认true); RETENTION_DAYS: 增量策略保留窗口天数(可选,默认7); PARALLEL_WORKERS: RMAN并行通道数(可选,默认2); COMPRESSION_LEVEL: 压缩级别(可选,默认0); ENABLE_COMPRESSION: 启用压缩(可选,默认true)"
     },
     "mssql": {
       "type": "mssql",
@@ -53,9 +57,10 @@
       "ssl_mode": "",
       "extra": {
         "INSTANCE": "",
-        "AUTH_TYPE": "windows"
+        "AUTH_TYPE": "windows",
+        "ENABLE_COMPRESSION": "true"
       },
-      "_extra_help": "INSTANCE: SQL Server命名实例名,默认实例留空(可选); AUTH_TYPE: 认证方式 windows/sql,默认sql(可选)"
+      "_extra_help": "INSTANCE: SQL Server命名实例名,默认实例留空(可选); AUTH_TYPE: 认证方式 windows/sql,默认sql(可选); ENABLE_COMPRESSION: 启用压缩(可选,默认true)"
     },
     "postgresql": {
       "type": "postgresql",
@@ -84,9 +89,12 @@
         "DM_HOME": "C:\\dmdbms",
         "DM_INSTANCE": "DMSERVER",
         "DM_DATA_DIR": "C:\\dmdbms\\data\\DAMENG",
-        "AUTO_GHOST_CLEANUP": "true"
+        "AUTO_GHOST_CLEANUP": "true",
+        "PARALLEL_WORKERS": "2",
+        "COMPRESSION_LEVEL": "0",
+        "ENABLE_COMPRESSION": "true"
       },
-      "_extra_help": "DM_HOME: 达梦安装目录(必填); DM_INSTANCE: 实例名(可选); DM_DATA_DIR: 数据目录,物理备份还原用(可选); 归档目录从 BaseBackupDir 自动推导,无需配置"
+      "_extra_help": "DM_HOME: 达梦安装目录(必填); DM_INSTANCE: 实例名(可选); DM_DATA_DIR: 数据目录,物理备份还原用(可选); AUTO_GHOST_CLEANUP: 物理备份前自动清理幽灵归档(可选,默认true); PARALLEL_WORKERS: 并行线程数(可选,默认2); COMPRESSION_LEVEL: 压缩级别(可选,默认0); ENABLE_COMPRESSION: 启用压缩(可选,默认true)"
     }
   }
 }

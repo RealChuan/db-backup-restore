@@ -37,13 +37,6 @@ func ConvertGBKToUTF8(data []byte) (string, error) {
 // LineCallback 是逐行输出的回调函数类型，line 为已解码的行内容
 type LineCallback func(line string)
 
-// ExecCommand 执行命令并处理输出的字符编码（只返回 stdout）
-// 无论命令是否成功，都返回 stdout 和 error
-// 默认进行 GBK 转 UTF8 转换
-func ExecCommand(cmd *exec.Cmd) (string, error) {
-	return ExecCommandWithEncoding(cmd, true)
-}
-
 // ExecCommandWithEncoding 执行命令并处理输出的字符编码
 // convertGBK: 是否将 GBK 编码转换为 UTF8
 func ExecCommandWithEncoding(cmd *exec.Cmd, convertGBK bool) (string, error) {

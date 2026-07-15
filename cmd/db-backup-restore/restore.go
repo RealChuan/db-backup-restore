@@ -27,11 +27,10 @@ var (
 var restoreCmd = &cobra.Command{
 	Use:   "restore",
 	Short: "执行数据库还原",
-	Long: `执行数据库还原操作，支持按备份文件还原、时间点恢复(PITR)、增量还原、归档还原等。
+	Long: `执行数据库还原操作，支持按备份文件还原、时间点恢复(PITR)、归档还原等。
 
 支持的还原模式(--restore-mode):
-  - full:         全量还原（默认，Oracle RMAN 自动处理增量链）
-  - incremental:  增量还原（仅达梦: RECOVER WITH BACKUPDIR；Oracle 不支持，请使用 --no-redo）
+  - full:         全量还原（默认，Oracle RMAN 和达梦 dmrman 自动处理增量链）
   - archive:      归档还原（Oracle: RESTORE ARCHIVELOG; 达梦: RESTORE ARCHIVE LOG）
   - controlfile:  控制文件还原（仅 Oracle: RESTORE CONTROLFILE FROM AUTOBACKUP）
 
@@ -51,7 +50,7 @@ var restoreCmd = &cobra.Command{
   # MySQL 还原到指定数据库
   db-backup-restore restore -c config.json -t mysql --backup-identifier backup.sql --target-database new_db_name
 
-  # Oracle 全量还原（默认模式）
+  # Oracle 全量还原（默认模式，自动处理增量链）
   db-backup-restore restore -c config.json -t oracle --backup-type physical --backup-identifier /path/to/backup
 
   # Oracle 指定 TAG 还原
@@ -94,12 +93,8 @@ var restoreCmd = &cobra.Command{
   db-backup-restore restore -c config.json -t oracle --backup-type physical \
     --restore-mode controlfile --backup-identifier TAG20260703T120000
 
-  # 达梦全量还原
+  # 达梦还原（默认全量模式，自动处理增量链）
   db-backup-restore restore -c config.json -t dameng --backup-type physical --backup-identifier /backup/dm_full
-
-  # 达梦增量还原
-  db-backup-restore restore -c config.json -t dameng --backup-type physical \
-    --restore-mode incremental --backup-identifier /backup/dm_incr
 
   # 达梦时间点还原
   db-backup-restore restore -c config.json -t dameng --backup-type physical \
@@ -124,7 +119,7 @@ func init() {
 	restoreCmd.Flags().StringVar(&remapSchema, "remap-schema", "",
 		"模式映射，格式: source:target（仅达梦 dimp 支持，将源模式数据导入目标模式）")
 	restoreCmd.Flags().StringVar(&restoreMode, "restore-mode", "full",
-		"还原模式: full(全量), incremental(增量), archive(归档), controlfile(控制文件,仅Oracle)")
+		"还原模式: full(全量,默认), archive(归档), controlfile(控制文件,仅Oracle)")
 	restoreCmd.Flags().StringVar(&recoveryPointInTime, "recovery-point-in-time", "",
 		"时间点还原，格式: 2006-01-02T15:04:05（Oracle/达梦支持，可与 --backup-identifier 组合）")
 	restoreCmd.Flags().StringVar(&recoverySCN, "scn", "",
@@ -132,7 +127,7 @@ func init() {
 	restoreCmd.Flags().StringVar(&recoveryLSN, "lsn", "",
 		"按 LSN 还原（仅达梦支持，配合 --restore-mode archive 使用）")
 	restoreCmd.Flags().BoolVar(&noRedo, "no-redo", false,
-		"增量还原时跳过归档日志应用，即 NOREDO（仅 Oracle 支持）")
+		"还原时跳过归档日志应用，即 NOREDO（仅 Oracle 支持）")
 	restoreCmd.Flags().StringVar(&archiveFromSeq, "archive-from-seq", "",
 		"归档还原起始序列号（仅 Oracle 支持，配合 --restore-mode archive 使用）")
 	restoreCmd.Flags().StringVar(&archiveUntilSeq, "archive-until-seq", "",

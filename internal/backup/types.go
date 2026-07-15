@@ -30,28 +30,23 @@ const (
 type RestoreMode string
 
 const (
-	RestoreModeFull        RestoreMode = "full"        // 全量还原（所有数据库支持）
-	RestoreModeIncremental RestoreMode = "incremental" // 增量还原（Oracle: RECOVER [NOREDO]; 达梦: RECOVER WITH BACKUPDIR）
+	RestoreModeFull        RestoreMode = "full"        // 全量还原（默认，Oracle RMAN 和达梦 dmrman 自动处理增量链）
 	RestoreModeArchive     RestoreMode = "archive"     // 归档还原（Oracle: RESTORE ARCHIVELOG; 达梦: RESTORE ARCHIVE LOG）
 	RestoreModeControlFile RestoreMode = "controlfile" // 控制文件还原（仅 Oracle: RESTORE CONTROLFILE FROM AUTOBACKUP）
 )
 
 // BackupOptions 备份操作的可选参数
 type BackupOptions struct {
-	Mode              BackupMode        // 备份模式: full/incremental/differential/level0/archive
-	Type              BackupType        // 备份类型: logical/physical
-	ParallelWorkers   int               // 并行工作线程数（物理备份生效，默认 2）
-	EnableCompression bool              // 是否启用压缩
-	CompressionLevel  int               // 压缩级别，仅物理备份生效（0=不指定级别，使用工具默认; 达梦1-9; Oracle: 1-3=LOW, 4-6=MEDIUM, 7-9=HIGH; 其他数据库忽略此字段）
-	Encryption        bool              // 是否启用加密（物理备份，Oracle/达梦支持）
-	EncryptionKey     string            // 加密密钥（需配合 Encryption 使用; Oracle: SET ENCRYPTION; 达梦: IDENTIFIED BY）
-	TargetPath        string            // 备份目标路径
-	ArchiveLogDest    string            // 归档日志目标路径
-	ArchiveFromLSN    string            // 归档备份起始 LSN（仅达梦: BACKUP ARCHIVELOG FROM LSN，配合 archive 模式）
-	ArchiveUntilLSN   string            // 归档备份结束 LSN（仅达梦: BACKUP ARCHIVELOG TO LSN，配合 archive 模式）
-	ExtraParams       map[string]string // 额外参数（MSSQL 使用 database 键指定数据库名）
-	RetentionDays     int               // 增量策略保留窗口天数（仅 Oracle 支持，默认 7，配合 incremental/differential/level0 模式使用）
-	Timeout           time.Duration     // 操作超时时间
+	Mode            BackupMode        // 备份模式: full/incremental/differential/level0/archive
+	Type            BackupType        // 备份类型: logical/physical
+	Encryption      bool              // 是否启用加密（物理备份，Oracle/达梦支持）
+	EncryptionKey   string            // 加密密钥（需配合 Encryption 使用; Oracle: SET ENCRYPTION; 达梦: IDENTIFIED BY）
+	TargetPath      string            // 备份目标路径
+	ArchiveLogDest  string            // 归档日志目标路径
+	ArchiveFromLSN  string            // 归档备份起始 LSN（仅达梦: BACKUP ARCHIVELOG FROM LSN，配合 archive 模式）
+	ArchiveUntilLSN string            // 归档备份结束 LSN（仅达梦: BACKUP ARCHIVELOG TO LSN，配合 archive 模式）
+	ExtraParams     map[string]string // 额外参数（MSSQL 使用 database 键指定数据库名）
+	Timeout         time.Duration     // 操作超时时间
 }
 
 // BackupResult 备份操作返回结果
@@ -100,8 +95,8 @@ type RestoreOptions struct {
 	RecoveryLSN            string            // 按 LSN 还原（仅达梦支持，配合 archive 模式使用）
 	BackupIdentifier       string            // 备份标识符（Oracle/达梦: TAG 或备份集路径; MySQL/PostgreSQL/MSSQL: 备份文件路径）
 	BackupType             BackupType        // 备份类型: logical/physical
-	RestoreMode            RestoreMode       // 还原模式: full/incremental/archive/controlfile（Oracle/达梦支持）
-	NoRedo                 bool              // 增量还原时是否跳过归档日志，即 NOREDO（仅 Oracle 支持）
+	RestoreMode            RestoreMode       // 还原模式: full/archive/controlfile（Oracle/达梦支持）
+	NoRedo                 bool              // 还原时是否跳过归档日志，即 NOREDO（仅 Oracle 支持）
 	ArchiveFromSeq         string            // 归档还原起始序列号（仅 Oracle 支持，配合 archive 模式使用）
 	ArchiveUntilSeq        string            // 归档还原结束序列号（仅 Oracle 支持，配合 archive 模式使用）
 	ArchiveLogDest         string            // 归档日志目录路径（Oracle/达梦: 从 BaseBackupDir 自动推导，用于 RECOVER WITH ARCHIVEDIR）
@@ -156,8 +151,6 @@ func ParseRestoreMode(s string) (RestoreMode, error) {
 	switch s {
 	case string(RestoreModeFull), "":
 		return RestoreModeFull, nil
-	case string(RestoreModeIncremental):
-		return RestoreModeIncremental, nil
 	case string(RestoreModeArchive):
 		return RestoreModeArchive, nil
 	case string(RestoreModeControlFile):

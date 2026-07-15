@@ -269,7 +269,7 @@ var (
 	rmanIdentifiedByDoubleQuoteRegex = regexp.MustCompile(`(IDENTIFIED\s+BY\s+")([^"]*)(")`)
 
 	passwordFlagRegex         = regexp.MustCompile(`(--password=)\S+`)
-	mysqlPasswordShortRegex   = regexp.MustCompile(`(-p)([^\s\-]+)`)
+	mysqlPasswordShortRegex   = regexp.MustCompile(`(^|\s)(-p)([^\s\-]+)`)
 	damengUseridPasswordRegex = regexp.MustCompile(`(USERID=\S+/)(\S+?)(@\S+)`)
 )
 
@@ -297,8 +297,9 @@ func MaskPassword(cmdStr string) string {
 	cmdStr = passwordFlagRegex.ReplaceAllString(cmdStr, "${1}***")
 
 	// -pSECRET (后面紧跟密码，无空格) → -p***
-	// 注意：需要避免匹配 -p 后面跟空格的情况（那是没有密码的 -p 参数）
-	cmdStr = mysqlPasswordShortRegex.ReplaceAllString(cmdStr, "${1}***")
+	// 使用 (^|\s) 前缀锚定避免匹配 --password=*** 中的 -p（修复过度匹配 bug）
+	// 替换时保留前缀（${1}）和 -p（${2}），仅替换密码部分（${3}）
+	cmdStr = mysqlPasswordShortRegex.ReplaceAllString(cmdStr, "${1}${2}***")
 
 	// 达梦 USERID=user/password@host:port → USERID=user/***@host:port
 	cmdStr = damengUseridPasswordRegex.ReplaceAllString(cmdStr, "${1}***${3}")

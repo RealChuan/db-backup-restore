@@ -67,7 +67,7 @@ func TestParseRestoreMode(t *testing.T) {
 	}{
 		{"full", RestoreModeFull, false},
 		{"", RestoreModeFull, false},
-		{"incremental", RestoreModeIncremental, false},
+		{"incremental", "", true},
 		{"archive", RestoreModeArchive, false},
 		{"controlfile", RestoreModeControlFile, false},
 		{"invalid", "", true},

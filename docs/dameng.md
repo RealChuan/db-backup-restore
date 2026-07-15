@@ -144,15 +144,14 @@ db-backup-restore backup -c config.json -t dameng --backup-type physical --backu
 
 ### 还原（脱机）
 
+> **说明**：达梦还原统一使用默认的 `full` 模式（`--restore-mode full`，可省略），dmrman 的 `RECOVER WITH BACKUPDIR` 自动查找并应用增量备份集，无需区分全量/增量还原。
+
 ```bash
 # 逻辑还原
 db-backup-restore restore -c config.json -t dameng --backup-identifier /backup/dameng/dameng_full_20260703.dmp
 
-# 物理还原（全量）
+# 物理还原（默认 full 模式，自动处理增量链）
 db-backup-restore restore -c config.json -t dameng --backup-type physical --backup-identifier /backup/dameng/dm_full_20260703
-
-# 物理还原（增量还原模式）
-db-backup-restore restore -c config.json -t dameng --backup-type physical --restore-mode incremental --backup-identifier /backup/dameng/dm_full_20260703
 
 # 物理还原（归档还原模式）
 db-backup-restore restore -c config.json -t dameng --backup-type physical --restore-mode archive --backup-identifier /backup/dameng/dm_arch_20260703

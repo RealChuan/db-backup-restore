@@ -64,14 +64,14 @@ func (m *MSSQLBackup) Backup(ctx context.Context, opts BackupOptions, callback P
 	databases := m.parseDatabaseNames(databaseName)
 
 	if len(databases) == 0 {
-		return m.backupLogicalAll(ctx, opts, backupDir, callback)
+		return m.backupLogicalAll(ctx, backupDir, callback)
 	}
 
 	if len(databases) == 1 {
-		return m.backupLogicalSingle(ctx, opts, backupDir, databases[0], callback)
+		return m.backupLogicalSingle(ctx, backupDir, databases[0], callback)
 	}
 
-	return m.backupLogicalMultiple(ctx, opts, backupDir, databases, callback)
+	return m.backupLogicalMultiple(ctx, backupDir, databases, callback)
 }
 
 // Restore 执行 SQL Server 还原

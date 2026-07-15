@@ -12,12 +12,11 @@ func TestDamengBackup_BuildDexpArgs_Full(t *testing.T) {
 		Port:     5236,
 		User:     "SYSDBA",
 		Password: "test123",
-		Extra:    map[string]string{"DM_HOME": "/opt/dmdbms"},
+		Extra:    map[string]string{"DM_HOME": "/opt/dmdbms", "ENABLE_COMPRESSION": "true", "PARALLEL_WORKERS": "4"},
 	}
 	dm, _ := NewDamengBackup(cfg)
 
-	opts := BackupOptions{EnableCompression: true, ParallelWorkers: 4}
-	args := dm.buildDexpArgs("/backup/dameng_full_20260703.dmp", "20260703_120000", opts, "FULL")
+	args := dm.buildDexpArgs("/backup/dameng_full_20260703.dmp", "20260703_120000", "FULL")
 
 	argsStr := strings.Join(args, " ")
 
@@ -51,12 +50,11 @@ func TestDamengBackup_BuildDexpArgs_Schemas(t *testing.T) {
 		Port:     5236,
 		User:     "SYSDBA",
 		Password: "test123",
-		Extra:    map[string]string{"DM_HOME": "/opt/dmdbms"},
+		Extra:    map[string]string{"DM_HOME": "/opt/dmdbms", "ENABLE_COMPRESSION": "false"},
 	}
 	dm, _ := NewDamengBackup(cfg)
 
-	opts := BackupOptions{}
-	args := dm.buildDexpArgs("/backup/schema1_20260703.dmp", "20260703_120000", opts, "SCHEMAS", "SCHEMA1")
+	args := dm.buildDexpArgs("/backup/schema1_20260703.dmp", "20260703_120000", "SCHEMAS", "SCHEMA1")
 
 	argsStr := strings.Join(args, " ")
 

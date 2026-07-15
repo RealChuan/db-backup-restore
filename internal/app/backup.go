@@ -13,16 +13,12 @@ import (
 
 // BackupOptions 备份应用层的选项参数。
 type BackupOptions struct {
-	Mode              string // 备份模式: full, incremental, differential, level0, archive
-	Type              string // 备份类型: logical, physical
-	ParallelWorkers   int    // 并行工作线程数（物理备份生效）
-	EnableCompression bool   // 是否启用压缩
-	CompressionLevel  int    // 压缩级别，仅物理备份生效（0=不指定级别; 达梦1-9; Oracle: 1-3=LOW, 4-6=MEDIUM, 7-9=HIGH）
-	Encryption        bool   // 是否启用加密（物理备份，Oracle/达梦支持）
-	EncryptionKey     string // 加密密钥（需配合 Encryption 使用）
-	ArchiveFromLSN    string // 归档备份起始 LSN（仅达梦: 配合 archive 模式使用）
-	ArchiveUntilLSN   string // 归档备份结束 LSN（仅达梦: 配合 archive 模式使用）
-	RetentionDays     int    // 增量策略保留窗口天数（仅 Oracle 支持，默认 7）
+	Mode            string // 备份模式: full, incremental, differential, level0, archive
+	Type            string // 备份类型: logical, physical
+	Encryption      bool   // 是否启用加密（物理备份，Oracle/达梦支持）
+	EncryptionKey   string // 加密密钥（需配合 Encryption 使用）
+	ArchiveFromLSN  string // 归档备份起始 LSN（仅达梦: 配合 archive 模式使用）
+	ArchiveUntilLSN string // 归档备份结束 LSN（仅达梦: 配合 archive 模式使用）
 }
 
 // BackupApp 封装备份操作的应用服务。
@@ -60,19 +56,15 @@ func (a *BackupApp) Run(ctx context.Context, dbType string, opts BackupOptions) 
 	typeDir := string(backupTypeVal)
 
 	backupOpts := backup.BackupOptions{
-		Mode:              backupModeVal,
-		Type:              backupTypeVal,
-		ParallelWorkers:   opts.ParallelWorkers,
-		EnableCompression: opts.EnableCompression,
-		CompressionLevel:  opts.CompressionLevel,
-		Encryption:        opts.Encryption,
-		EncryptionKey:     opts.EncryptionKey,
-		TargetPath:        backupDir(a.cfg.BaseBackupDir, dbType, typeDir),
-		ArchiveLogDest:    archiveLogDir(a.cfg.BaseBackupDir, dbType, typeDir),
-		ArchiveFromLSN:    opts.ArchiveFromLSN,
-		ArchiveUntilLSN:   opts.ArchiveUntilLSN,
-		RetentionDays:     opts.RetentionDays,
-		Timeout:           2 * time.Hour,
+		Mode:            backupModeVal,
+		Type:            backupTypeVal,
+		Encryption:      opts.Encryption,
+		EncryptionKey:   opts.EncryptionKey,
+		TargetPath:      backupDir(a.cfg.BaseBackupDir, dbType, typeDir),
+		ArchiveLogDest:  archiveLogDir(a.cfg.BaseBackupDir, dbType, typeDir),
+		ArchiveFromLSN:  opts.ArchiveFromLSN,
+		ArchiveUntilLSN: opts.ArchiveUntilLSN,
+		Timeout:         2 * time.Hour,
 	}
 
 	var result *backup.BackupResult
@@ -108,7 +100,7 @@ func (a *BackupApp) Run(ctx context.Context, dbType string, opts BackupOptions) 
 		Success:   true,
 		Operation: OpBackup,
 		DBType:    dbType,
-		Message:   "备份成功",
+		Message:   MsgBackupSuccess,
 		Data:      data,
 	}, nil
 }

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/RealChuan/db-backup-restore/internal/config"
 	"github.com/RealChuan/db-backup-restore/internal/logging"
 	"github.com/RealChuan/db-backup-restore/pkg/fileutil"
 )
@@ -117,7 +118,7 @@ func (o *OracleBackup) configureAutoBackupFormat(ctx context.Context, backupDir 
 //   - archive: 独立归档日志备份 (BACKUP ARCHIVELOG ALL)
 func (o *OracleBackup) buildBackupScript(opts BackupOptions, backupDir string) (string, error) {
 	if opts.Mode == BackupModeArchive {
-		return o.buildArchiveOnlyBackupScript(opts, backupDir)
+		return o.buildArchiveOnlyBackupScript(backupDir)
 	}
 
 	cleanDir, err := sanitizeBackupPath(backupDir)
@@ -126,20 +127,22 @@ func (o *OracleBackup) buildBackupScript(opts BackupOptions, backupDir string) (
 	}
 
 	safeFormats := o.buildBackupFormats(cleanDir)
+	extra := o.config.GetExtraTyped()
 
 	var script strings.Builder
 	script.WriteString("RUN {\n")
 
-	o.appendChannelAlloc(&script, opts.ParallelWorkers, safeFormats.datafile)
-	o.appendCompressionConfig(&script, opts)
+	parallelWorkers := extra.ParallelWorkers()
+	o.appendChannelAlloc(&script, parallelWorkers, safeFormats.datafile)
+	o.appendCompressionConfig(&script, extra)
 	o.appendEncryptionConfig(&script, opts)
-	o.appendRetentionPolicy(&script, opts)
+	o.appendRetentionPolicy(&script, extra, opts)
 	o.appendBackupCommand(&script, opts, safeFormats)
 
 	fmt.Fprintf(&script, "  BACKUP CURRENT CONTROLFILE FORMAT '%s';\n", safeFormats.controlfile)
 	fmt.Fprintf(&script, "  BACKUP SPFILE FORMAT '%s';\n", safeFormats.spfile)
 
-	o.appendChannelRelease(&script, opts.ParallelWorkers)
+	o.appendChannelRelease(&script, parallelWorkers)
 
 	script.WriteString("}\n")
 	script.WriteString("DELETE NOPROMPT OBSOLETE;\n")
@@ -185,9 +188,9 @@ func (o *OracleBackup) appendChannelRelease(script *strings.Builder, workers int
 }
 
 // appendCompressionConfig 追加压缩配置
-func (o *OracleBackup) appendCompressionConfig(script *strings.Builder, opts BackupOptions) {
-	if opts.EnableCompression {
-		level := mapCompressionLevelToOracle(opts.CompressionLevel)
+func (o *OracleBackup) appendCompressionConfig(script *strings.Builder, extra *config.TypedExtra) {
+	if extra.EnableCompression() {
+		level := mapCompressionLevelToOracle(extra.CompressionLevel())
 		fmt.Fprintf(script, "  CONFIGURE COMPRESSION ALGORITHM '%s';\n", level)
 	}
 }
@@ -204,9 +207,9 @@ func (o *OracleBackup) appendEncryptionConfig(script *strings.Builder, opts Back
 }
 
 // appendRetentionPolicy 追增增量策略保留策略配置
-func (o *OracleBackup) appendRetentionPolicy(script *strings.Builder, opts BackupOptions) {
+func (o *OracleBackup) appendRetentionPolicy(script *strings.Builder, extra *config.TypedExtra, opts BackupOptions) {
 	if opts.Mode == BackupModeIncremental || opts.Mode == BackupModeDifferential || opts.Mode == BackupModeLevel0 {
-		retentionDays := opts.RetentionDays
+		retentionDays := extra.RetentionDays()
 		if retentionDays <= 0 {
 			retentionDays = 7
 		}
@@ -236,7 +239,7 @@ func (o *OracleBackup) buildBackupCommandStr(opts BackupOptions, format string) 
 
 // buildArchiveOnlyBackupScript 构建独立归档日志备份脚本（不含数据文件备份）
 // 语法：BACKUP ARCHIVELOG ALL [DELETE INPUT] FORMAT 'path';
-func (o *OracleBackup) buildArchiveOnlyBackupScript(opts BackupOptions, backupDir string) (string, error) {
+func (o *OracleBackup) buildArchiveOnlyBackupScript(backupDir string) (string, error) {
 	var script strings.Builder
 	script.WriteString("RUN {\n")
 
@@ -247,8 +250,9 @@ func (o *OracleBackup) buildArchiveOnlyBackupScript(opts BackupOptions, backupDi
 	archFormat := filepath.Join(cleanDir, "arch_%U")
 	safeArchFormat := escapeOracleRMANString(archFormat)
 
-	if opts.ParallelWorkers > 1 {
-		for i := 1; i <= opts.ParallelWorkers; i++ {
+	parallelWorkers := o.config.GetExtraTyped().ParallelWorkers()
+	if parallelWorkers > 1 {
+		for i := 1; i <= parallelWorkers; i++ {
 			fmt.Fprintf(&script, "  ALLOCATE CHANNEL ch%d DEVICE TYPE DISK FORMAT '%s';\n", i, safeArchFormat)
 		}
 	} else {
@@ -257,8 +261,8 @@ func (o *OracleBackup) buildArchiveOnlyBackupScript(opts BackupOptions, backupDi
 
 	fmt.Fprintf(&script, "  BACKUP ARCHIVELOG ALL DELETE INPUT FORMAT '%s';\n", safeArchFormat)
 
-	if opts.ParallelWorkers > 1 {
-		for i := 1; i <= opts.ParallelWorkers; i++ {
+	if parallelWorkers > 1 {
+		for i := 1; i <= parallelWorkers; i++ {
 			fmt.Fprintf(&script, "  RELEASE CHANNEL ch%d;\n", i)
 		}
 	} else {

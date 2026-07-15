@@ -1,7 +1,6 @@
 package backup
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -32,9 +31,9 @@ func newTestDamengBackup(extra ...map[string]string) *DamengBackup {
 // ===== 备份脚本测试 =====
 
 func TestDamengBackup_BuildFullBackupScript(t *testing.T) {
-	dm := newTestDamengBackup()
+	dm := newTestDamengBackup(map[string]string{"ENABLE_COMPRESSION": "true", "PARALLEL_WORKERS": "2"})
 
-	opts := BackupOptions{EnableCompression: true, ParallelWorkers: 2}
+	opts := BackupOptions{}
 	script := dm.buildFullBackupScript("DM_FULL_20260703", "/backup/dm_full_20260703", opts)
 
 	if !strings.Contains(script, `BACKUP DATABASE FULL TO DM_FULL_20260703`) {
@@ -52,7 +51,7 @@ func TestDamengBackup_BuildFullBackupScript(t *testing.T) {
 }
 
 func TestDamengBackup_BuildFullBackupScript_NoCompression(t *testing.T) {
-	dm := newTestDamengBackup()
+	dm := newTestDamengBackup(map[string]string{"ENABLE_COMPRESSION": "false"})
 
 	opts := BackupOptions{}
 	script := dm.buildFullBackupScript("DM_FULL_20260703", "/backup/dm_full_20260703", opts)
@@ -63,9 +62,9 @@ func TestDamengBackup_BuildFullBackupScript_NoCompression(t *testing.T) {
 }
 
 func TestDamengBackup_BuildArchiveBackupScript(t *testing.T) {
-	dm := newTestDamengBackup()
+	dm := newTestDamengBackup(map[string]string{"ENABLE_COMPRESSION": "true"})
 
-	opts := BackupOptions{EnableCompression: true}
+	opts := BackupOptions{}
 	script, err := dm.buildArchiveBackupScript("DM_ARCH_20260703", "/backup/dm_arch_20260703", opts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -127,11 +126,11 @@ func TestDamengBackup_BuildFullRestoreScript(t *testing.T) {
 	if !strings.Contains(script, "UPDATE DB_MAGIC") {
 		t.Errorf("全量还原脚本缺少 UPDATE DB_MAGIC，得到: %s", script)
 	}
+	if !strings.Contains(script, "WITH BACKUPDIR") {
+		t.Errorf("全量还原脚本应包含 WITH BACKUPDIR 以自动处理增量链，得到: %s", script)
+	}
 	if strings.Contains(script, "UNTIL TIME") {
 		t.Errorf("非 PITR 还原不应包含 UNTIL TIME，得到: %s", script)
-	}
-	if strings.Contains(script, "WITH BACKUPDIR") {
-		t.Errorf("全量还原不应包含 WITH BACKUPDIR，得到: %s", script)
 	}
 }
 
@@ -167,44 +166,6 @@ func TestDamengBackup_BuildFullRestoreScript_WithArchDir(t *testing.T) {
 	// RESTORE 命令总是使用 FROM BACKUPSET，但 RECOVER 命令在有归档目录时应使用 WITH ARCHIVEDIR
 	if !strings.Contains(script, `RECOVER DATABASE '/opt/dmdbms/data/DAMENG_new' WITH ARCHIVEDIR '/opt/dmdbms/arch'`) {
 		t.Errorf("配置归档目录时 RECOVER 应使用 WITH ARCHIVEDIR，得到: %s", script)
-	}
-}
-
-func TestDamengBackup_BuildIncrementalRestoreScript(t *testing.T) {
-	dm := newTestDamengBackup()
-
-	opts := RestoreOptions{RestoreMode: RestoreModeIncremental}
-	script := dm.buildIncrementalRestoreScript("/backup/dm_full_20260703", "/opt/dmdbms/data/DAMENG_new", opts)
-
-	if !strings.Contains(script, `RESTORE DATABASE`) {
-		t.Errorf("增量还原脚本缺少 RESTORE DATABASE，得到: %s", script)
-	}
-	if !strings.Contains(script, `RECOVER DATABASE`) {
-		t.Errorf("增量还原脚本缺少 RECOVER DATABASE，得到: %s", script)
-	}
-	if !strings.Contains(script, "WITH BACKUPDIR") {
-		t.Errorf("增量还原脚本应包含 WITH BACKUPDIR 以自动应用增量备份集，得到: %s", script)
-	}
-	if !strings.Contains(script, "UPDATE DB_MAGIC") {
-		t.Errorf("增量还原脚本缺少 UPDATE DB_MAGIC，得到: %s", script)
-	}
-}
-
-func TestDamengBackup_BuildIncrementalRestoreScript_WithPITR(t *testing.T) {
-	dm := newTestDamengBackup()
-
-	pitrTime := time.Date(2026, 7, 3, 14, 0, 0, 0, time.Local)
-	opts := RestoreOptions{
-		RestoreMode:         RestoreModeIncremental,
-		RecoveryPointInTime: pitrTime,
-	}
-	script := dm.buildIncrementalRestoreScript("/backup/dm_full_20260703", "/opt/dmdbms/data/DAMENG_new", opts)
-
-	if !strings.Contains(script, "WITH BACKUPDIR") {
-		t.Errorf("增量还原脚本应包含 WITH BACKUPDIR，得到: %s", script)
-	}
-	if !strings.Contains(script, "UNTIL TIME '2026-07-03 14:00:00'") {
-		t.Errorf("增量还原 PITR 应包含 UNTIL TIME，得到: %s", script)
 	}
 }
 
@@ -297,12 +258,6 @@ func TestDamengBackup_BuildRestoreScriptByMode(t *testing.T) {
 		{
 			name:           "full_mode",
 			restoreMode:    RestoreModeFull,
-			wantContains:   "RESTORE DATABASE",
-			wantNotContain: "WITH BACKUPDIR",
-		},
-		{
-			name:           "incremental_mode",
-			restoreMode:    RestoreModeIncremental,
 			wantContains:   "WITH BACKUPDIR",
 			wantNotContain: "",
 		},
@@ -315,8 +270,8 @@ func TestDamengBackup_BuildRestoreScriptByMode(t *testing.T) {
 		{
 			name:           "empty_mode_defaults_to_full",
 			restoreMode:    "",
-			wantContains:   "RESTORE DATABASE",
-			wantNotContain: "WITH BACKUPDIR",
+			wantContains:   "WITH BACKUPDIR",
+			wantNotContain: "",
 		},
 	}
 
@@ -359,13 +314,11 @@ func TestDamengBackup_BuildFullBackupScript_WithEncryption(t *testing.T) {
 }
 
 func TestDamengBackup_BuildFullBackupScript_AllOptions(t *testing.T) {
-	dm := newTestDamengBackup()
+	dm := newTestDamengBackup(map[string]string{"ENABLE_COMPRESSION": "true", "PARALLEL_WORKERS": "4"})
 
 	opts := BackupOptions{
-		EnableCompression: true,
-		ParallelWorkers:   4,
-		Encryption:        true,
-		EncryptionKey:     "pass",
+		Encryption:    true,
+		EncryptionKey: "pass",
 	}
 	script := dm.buildFullBackupScript("DM_FULL", "/backup/dm_full", opts)
 
@@ -377,9 +330,9 @@ func TestDamengBackup_BuildFullBackupScript_AllOptions(t *testing.T) {
 }
 
 func TestDamengBackup_BuildArchiveBackupScript_WithParallel(t *testing.T) {
-	dm := newTestDamengBackup()
+	dm := newTestDamengBackup(map[string]string{"PARALLEL_WORKERS": "3"})
 
-	opts := BackupOptions{ParallelWorkers: 3}
+	opts := BackupOptions{}
 	script, err := dm.buildArchiveBackupScript("DM_ARCH", "/backup/dm_arch", opts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -428,15 +381,13 @@ func TestDamengBackup_BuildArchiveBackupScript_InvalidLSNError(t *testing.T) {
 }
 
 func TestDamengBackup_BuildArchiveBackupScript_AllOptions(t *testing.T) {
-	dm := newTestDamengBackup()
+	dm := newTestDamengBackup(map[string]string{"ENABLE_COMPRESSION": "true", "PARALLEL_WORKERS": "4"})
 
 	opts := BackupOptions{
-		EnableCompression: true,
-		ParallelWorkers:   4,
-		Encryption:        true,
-		EncryptionKey:     "secret",
-		ArchiveFromLSN:    "500",
-		ArchiveUntilLSN:   "1500",
+		Encryption:      true,
+		EncryptionKey:   "secret",
+		ArchiveFromLSN:  "500",
+		ArchiveUntilLSN: "1500",
 	}
 	script, err := dm.buildArchiveBackupScript("DM_ARCH_ALL", "/backup/dm_all", opts)
 	if err != nil {
@@ -524,50 +475,6 @@ func TestDamengBackup_ArchModeRegex_AlternateFormat(t *testing.T) {
 	}
 	if matches[1] != "Y" {
 		t.Errorf("archModeRegex 匹配结果 = %q, want Y", matches[1])
-	}
-}
-
-func TestDamengBackup_BackupPhysical_ArchiveCheck_AutoDeriveArchDir(t *testing.T) {
-	// 验证归档目录从 opts.ArchiveLogDest 自动推导
-	opts := BackupOptions{
-		ArchiveLogDest: "/backup/dameng/archivelog",
-	}
-
-	if opts.ArchiveLogDest == "" {
-		t.Error("ArchiveLogDest 不应为空（应用层应从 BaseBackupDir 自动推导）")
-	}
-}
-
-func TestDamengBackup_BackupPhysical_TimeoutContext(t *testing.T) {
-	_ = newTestDamengBackup(map[string]string{
-		"DM_HOME": "/opt/dmdbms",
-	})
-
-	// 验证 Timeout 设置能正确创建带超时的 context
-	timeout := 2 * time.Hour
-	opts := BackupOptions{
-		Type:       BackupTypePhysical,
-		Mode:       BackupModeFull,
-		TargetPath: "/backup/dameng",
-		Timeout:    timeout,
-	}
-
-	// 模拟创建带超时的 context
-	ctx := context.Background()
-	backupCtx := ctx
-	if opts.Timeout > 0 {
-		var cancel context.CancelFunc
-		backupCtx, cancel = context.WithTimeout(ctx, opts.Timeout)
-		defer cancel()
-	}
-
-	deadline, ok := backupCtx.Deadline()
-	if !ok {
-		t.Error("带超时的 context 应有 deadline")
-	}
-	remaining := time.Until(deadline)
-	if remaining < timeout-1*time.Second || remaining > timeout+1*time.Second {
-		t.Errorf("超时 context 剩余时间 = %v, want approximately %v", remaining, timeout)
 	}
 }
 

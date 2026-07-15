@@ -10,15 +10,11 @@ import (
 )
 
 var (
-	backupMode        string
-	parallelWorkers   int
-	enableCompression bool
-	compressionLevel  int
-	encryption        bool
-	encryptionKey     string
-	archiveFromLSN    string
-	archiveUntilLSN   string
-	retentionDays     int
+	backupMode      string
+	encryption      bool
+	encryptionKey   string
+	archiveFromLSN  string
+	archiveUntilLSN string
 )
 
 var backupCmd = &cobra.Command{
@@ -44,9 +40,9 @@ var backupCmd = &cobra.Command{
   # MySQL 物理全量备份
   db-backup-restore backup -c config.json -t mysql --backup-type physical
 
-  # Oracle 全量物理备份（启用压缩和加密）
+  # Oracle 全量物理备份（启用加密）
   db-backup-restore backup -c config.json -t oracle --backup-type physical \
-    --enable-compression --encryption --encryption-key mypassword
+    --encryption --encryption-key mypassword
 
   # Oracle Level 0 增量基础备份（增量策略的起点）
   db-backup-restore backup -c config.json -t oracle --backup-type physical --backup-mode level0
@@ -57,9 +53,8 @@ var backupCmd = &cobra.Command{
   # Oracle 累积增量备份
   db-backup-restore backup -c config.json -t oracle --backup-type physical --backup-mode differential
 
-  # 达梦全量物理备份（启用并行和压缩）
-  db-backup-restore backup -c config.json -t dameng --backup-type physical \
-    --enable-compression --parallel-workers 4
+  # 达梦全量物理备份
+  db-backup-restore backup -c config.json -t dameng --backup-type physical
 
   # 达梦差异增量备份
   db-backup-restore backup -c config.json -t dameng --backup-type physical --backup-mode incremental
@@ -72,9 +67,8 @@ var backupCmd = &cobra.Command{
     --backup-mode archive --archive-from-lsn 1000 --archive-until-lsn 5000 \
     --encryption --encryption-key mypassword
 
-  # PostgreSQL 物理备份（启用压缩和并行）
-  db-backup-restore backup -c config.json -t postgresql --backup-type physical \
-    --enable-compression --parallel-workers 4`,
+  # PostgreSQL 物理备份
+  db-backup-restore backup -c config.json -t postgresql --backup-type physical`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		return runBackup(cmd.Context())
 	},
@@ -83,18 +77,12 @@ var backupCmd = &cobra.Command{
 func init() {
 	backupCmd.Flags().StringVar(&backupMode, "backup-mode", "full",
 		"备份模式: full(全量), incremental(差异增量), differential(累积增量), level0(Oracle增量基础), archive(独立归档日志)")
-	backupCmd.Flags().IntVar(&parallelWorkers, "parallel-workers", 2, "并行工作线程数（物理备份生效）")
-	backupCmd.Flags().BoolVar(&enableCompression, "enable-compression", true, "是否启用压缩")
-	backupCmd.Flags().IntVar(&compressionLevel, "compression-level", 0,
-		"压缩级别，仅物理备份生效（0=默认; 达梦: 1-9; Oracle: 1-3=LOW, 4-6=MEDIUM, 7-9=HIGH）")
 	backupCmd.Flags().BoolVar(&encryption, "encryption", false, "是否启用加密（物理备份，Oracle/达梦支持）")
 	backupCmd.Flags().StringVar(&encryptionKey, "encryption-key", "", "加密密钥（需配合 --encryption 使用）")
 	backupCmd.Flags().StringVar(&archiveFromLSN, "archive-from-lsn", "",
 		"归档备份起始 LSN（仅达梦: 配合 --backup-mode archive 使用）")
 	backupCmd.Flags().StringVar(&archiveUntilLSN, "archive-until-lsn", "",
 		"归档备份结束 LSN（仅达梦: 配合 --backup-mode archive 使用）")
-	backupCmd.Flags().IntVar(&retentionDays, "retention-days", 7,
-		"增量策略保留窗口天数（仅 Oracle 支持，默认 7，配合 incremental/differential/level0 模式使用）")
 
 	rootCmd.AddCommand(backupCmd)
 }
@@ -104,17 +92,12 @@ func runBackup(ctx context.Context) error {
 	if notifyWebhook != "" {
 		notifier = notify.NewNotifier(notifyWebhook)
 	}
+
 	result, err := app.NewBackupApp(appConfig, notifier).Run(ctx, databaseType, app.BackupOptions{
-		Mode:              backupMode,
-		Type:              backupType,
-		ParallelWorkers:   parallelWorkers,
-		EnableCompression: enableCompression,
-		CompressionLevel:  compressionLevel,
-		Encryption:        encryption,
-		EncryptionKey:     encryptionKey,
-		ArchiveFromLSN:    archiveFromLSN,
-		ArchiveUntilLSN:   archiveUntilLSN,
-		RetentionDays:     retentionDays,
+		Mode:            backupMode,
+		Type:            backupType,
+		ArchiveFromLSN:  archiveFromLSN,
+		ArchiveUntilLSN: archiveUntilLSN,
 	})
 	return outputResult(result, err, "backup")
 }

@@ -94,7 +94,7 @@ func (d *DamengBackup) Backup(ctx context.Context, opts BackupOptions, callback 
 	case BackupTypePhysical:
 		return d.backupPhysical(ctx, backupDir, opts, callback)
 	case BackupTypeLogical:
-		return d.backupLogical(ctx, backupDir, opts, callback)
+		return d.backupLogical(ctx, backupDir, callback)
 	default:
 		return nil, errors.New("达梦仅支持 logical 和 physical 备份类型")
 	}

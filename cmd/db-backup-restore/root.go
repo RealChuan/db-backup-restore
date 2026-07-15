@@ -50,9 +50,9 @@ var rootCmd = &cobra.Command{
   # 执行 MySQL 逻辑全量备份
   db-backup-restore backup -c config.json -t mysql
 
-  # 执行 Oracle 物理全量备份（启用压缩和加密）
+  # 执行 Oracle 物理全量备份（启用加密）
   db-backup-restore backup -c config.json -t oracle --backup-type physical \
-    --enable-compression --encryption --encryption-key mypassword
+    --encryption --encryption-key mypassword
 
   # 执行达梦物理增量备份
   db-backup-restore backup -c config.json -t dameng --backup-type physical --backup-mode incremental

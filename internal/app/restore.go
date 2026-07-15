@@ -18,10 +18,10 @@ type RestoreOptions struct {
 	RemapSchema            string // 模式映射（达梦 dimp: REMAP_SCHEMA=source:target，将源模式数据导入目标模式）
 	Type                   string // 备份类型: logical, physical
 	RecoveryPointInTime    string // 时间点还原，格式: 2006-01-02T15:04:05（Oracle/达梦支持，可与 BackupIdentifier 组合）
-	RestoreMode            string // 还原模式: full, incremental, archive, controlfile（Oracle/达梦支持）
+	RestoreMode            string // 还原模式: full, archive, controlfile（Oracle/达梦支持）
 	RecoverySCN            string // 按 SCN 还原（仅 Oracle 支持，可与 BackupIdentifier 组合）
 	RecoveryLSN            string // 按 LSN 还原（仅达梦支持，配合 archive 模式使用）
-	NoRedo                 bool   // 增量还原时跳过归档日志应用，即 NOREDO（仅 Oracle 支持）
+	NoRedo                 bool   // 还原时跳过归档日志应用，即 NOREDO（仅 Oracle 支持）
 	ArchiveFromSeq         string // 归档还原起始序列号（仅 Oracle 支持，配合 archive 模式使用）
 	ArchiveUntilSeq        string // 归档还原结束序列号（仅 Oracle 支持，配合 archive 模式使用）
 	CatalogPath            string // 备份文件注册路径（仅 Oracle 支持，异机还原时使用 CATALOG START WITH 注册备份）

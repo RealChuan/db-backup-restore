@@ -112,17 +112,27 @@ DELETE NOPROMPT OBSOLETE;
 2. **后续备份**：使用 `--backup-mode incremental` 创建 Level 1 差异增量
 3. **定期 Level 0**：定期使用 `--backup-mode level0` 创建新的 Level 0 基础备份
 
-增量策略下，工具会自动配置 `RECOVERY WINDOW` 保留策略（默认 7 天），防止 `DELETE OBSOLETE` 误删 Level 0 基础备份导致增量链断裂。可通过 `--retention-days` 参数自定义保留窗口。
+增量策略下，工具会自动配置 `RECOVERY WINDOW` 保留策略（默认 7 天），防止 `DELETE OBSOLETE` 误删 Level 0 基础备份导致增量链断裂。可通过 Extra 参数 `RETENTION_DAYS` 自定义保留窗口。
 
 ```bash
 # 使用默认 7 天保留窗口
 db-backup-restore backup -c config.json -t oracle --backup-type physical --backup-mode incremental
-
-# 自定义 14 天保留窗口
-db-backup-restore backup -c config.json -t oracle --backup-type physical --backup-mode incremental --retention-days 14
 ```
 
-> **注意**：`--retention-days` 仅在增量模式（incremental/differential/level0）下生效。全量备份（full）模式下忽略此参数。
+在 `config.json` 的 `extra` 中自定义保留窗口：
+
+```json
+{
+  "type": "oracle",
+  "extra": {
+    "ORACLE_HOME": "/u01/app/oracle/product/19c/dbhome_1",
+    "ORACLE_SID": "ORCL",
+    "RETENTION_DAYS": "14"
+  }
+}
+```
+
+> **注意**：`RETENTION_DAYS` 仅在增量模式（incremental/differential/level0）下生效。全量备份（full）模式下忽略此参数。
 
 ### 差异增量备份（Incremental Level 1）
 

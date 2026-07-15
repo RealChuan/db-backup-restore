@@ -43,20 +43,20 @@ func (d *DamengBackup) ListDatabases(ctx context.Context) ([]string, error) {
 }
 
 // backupLogical 执行达梦逻辑备份（dexp）
-func (d *DamengBackup) backupLogical(ctx context.Context, backupDir string, opts BackupOptions, callback ProgressCallback) (*BackupResult, error) {
+func (d *DamengBackup) backupLogical(ctx context.Context, backupDir string, callback ProgressCallback) (*BackupResult, error) {
 	databaseName := d.config.Database
 	databases := d.parseDatabaseNames(databaseName)
 
 	if len(databases) == 0 {
 		// FULL 模式
-		return d.backupFullLogical(ctx, backupDir, opts, callback)
+		return d.backupFullLogical(ctx, backupDir, callback)
 	}
 	// SCHEMAS 模式
-	return d.backupLogicalAll(ctx, backupDir, databases, opts, callback)
+	return d.backupLogicalAll(ctx, backupDir, databases, callback)
 }
 
 // backupFullLogical 全库逻辑备份
-func (d *DamengBackup) backupFullLogical(ctx context.Context, backupDir string, opts BackupOptions, callback ProgressCallback) (*BackupResult, error) {
+func (d *DamengBackup) backupFullLogical(ctx context.Context, backupDir string, callback ProgressCallback) (*BackupResult, error) {
 	startTime := time.Now()
 	result := &BackupResult{
 		StartTime: startTime,
@@ -75,7 +75,7 @@ func (d *DamengBackup) backupFullLogical(ctx context.Context, backupDir string, 
 		return nil, fmt.Errorf("invalid backup path: %w", err)
 	}
 
-	args := d.buildDexpArgs(backupPath, timestamp, opts, backupModeFULL)
+	args := d.buildDexpArgs(backupPath, timestamp, backupModeFULL)
 
 	logging.InfoCtx(ctx, "达梦全库逻辑备份", "output_file", backupPath)
 	output, err := d.execDump(ctx, args)
@@ -102,7 +102,7 @@ func (d *DamengBackup) backupFullLogical(ctx context.Context, backupDir string, 
 }
 
 // backupLogicalAll 按模式逻辑备份
-func (d *DamengBackup) backupLogicalAll(ctx context.Context, backupDir string, schemas []string, opts BackupOptions, callback ProgressCallback) (*BackupResult, error) {
+func (d *DamengBackup) backupLogicalAll(ctx context.Context, backupDir string, schemas []string, callback ProgressCallback) (*BackupResult, error) {
 	startTime := time.Now()
 	result := &BackupResult{
 		StartTime: startTime,
@@ -110,7 +110,7 @@ func (d *DamengBackup) backupLogicalAll(ctx context.Context, backupDir string, s
 	}
 
 	if len(schemas) == 1 {
-		return d.backupLogicalSingle(ctx, backupDir, schemas[0], opts, callback)
+		return d.backupLogicalSingle(ctx, backupDir, schemas[0], callback)
 	}
 
 	// 多模式：逐个备份
@@ -132,7 +132,7 @@ func (d *DamengBackup) backupLogicalAll(ctx context.Context, backupDir string, s
 			callback(percent, fmt.Sprintf("正在备份模式 %s (%d/%d)", schema, i+1, len(schemas)))
 		}
 
-		singleResult, err := d.backupLogicalSingle(ctx, backupDir, schema, opts, nil)
+		singleResult, err := d.backupLogicalSingle(ctx, backupDir, schema, nil)
 		if err != nil {
 			logging.WarnCtx(ctx, "逻辑备份模式失败，继续备份其他模式", "schema", schema, "error", err)
 			continue
@@ -160,7 +160,7 @@ func (d *DamengBackup) backupLogicalAll(ctx context.Context, backupDir string, s
 }
 
 // backupLogicalSingle 单模式逻辑备份
-func (d *DamengBackup) backupLogicalSingle(ctx context.Context, backupDir, schema string, opts BackupOptions, callback ProgressCallback) (*BackupResult, error) {
+func (d *DamengBackup) backupLogicalSingle(ctx context.Context, backupDir, schema string, callback ProgressCallback) (*BackupResult, error) {
 	startTime := time.Now()
 	result := &BackupResult{
 		StartTime: startTime,
@@ -183,7 +183,7 @@ func (d *DamengBackup) backupLogicalSingle(ctx context.Context, backupDir, schem
 		return nil, fmt.Errorf("invalid backup path: %w", err)
 	}
 
-	args := d.buildDexpArgs(backupPath, timestamp, opts, backupModeSCHEMAS, schema)
+	args := d.buildDexpArgs(backupPath, timestamp, backupModeSCHEMAS, schema)
 
 	logging.InfoCtx(ctx, "达梦模式逻辑备份", "schema", schema, "output_file", backupPath)
 	output, err := d.execDump(ctx, args)
@@ -210,7 +210,7 @@ func (d *DamengBackup) backupLogicalSingle(ctx context.Context, backupDir, schem
 }
 
 // buildDexpArgs 构建 dexp 命令参数
-func (d *DamengBackup) buildDexpArgs(outputFile string, timestamp string, opts BackupOptions, mode string, modeValue ...string) []string {
+func (d *DamengBackup) buildDexpArgs(outputFile string, timestamp string, mode string, modeValue ...string) []string {
 	args := []string{
 		fmt.Sprintf("USERID=%s", d.buildConnectionString()),
 		fmt.Sprintf("FILE=%s", outputFile),
@@ -228,13 +228,14 @@ func (d *DamengBackup) buildDexpArgs(outputFile string, timestamp string, opts B
 		}
 	}
 
-	if opts.EnableCompression {
+	extra := d.config.GetExtraTyped()
+	if extra.EnableCompression() {
 		args = append(args, "COMPRESS=Y")
 		args = append(args, "COMPRESS_LEVEL=2")
 	}
 
-	if opts.ParallelWorkers > 1 {
-		args = append(args, fmt.Sprintf("PARALLEL=%d", opts.ParallelWorkers))
+	if extra.ParallelWorkers() > 1 {
+		args = append(args, fmt.Sprintf("PARALLEL=%d", extra.ParallelWorkers()))
 	}
 
 	return args

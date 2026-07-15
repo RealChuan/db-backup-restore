@@ -2,7 +2,6 @@ package backup
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -49,22 +48,6 @@ func NewNotSupportedError(ctx context.Context, op, dbType string) error {
 		Message:   fmt.Sprintf("%s 操作在 %s 数据库上不支持", op, dbType),
 		Timestamp: time.Now(),
 		TraceID:   logging.GetTraceID(ctx),
-	}
-}
-
-// HandleError 统一错误处理
-func HandleError(err error) {
-	if err == nil {
-		return
-	}
-	var be *BackupError
-	if errors.As(err, &be) {
-		logging.Error("备份错误", "type", string(be.Type), "op", be.Op, "message", be.Message)
-		if be.Cause != nil {
-			logging.Debug("错误原因", "error", be.Cause)
-		}
-	} else {
-		logging.Error("未知错误", "error", err)
 	}
 }
 

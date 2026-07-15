@@ -1,7 +1,6 @@
 package backup
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -283,8 +282,20 @@ func TestOracleBackup_BuildBackupScript_DifferentialMode(t *testing.T) {
 }
 
 func TestOracleBackup_BuildBackupScript_WithCompression(t *testing.T) {
-	o := newTestOracleBackup(t)
-	opts := BackupOptions{EnableCompression: true}
+	cfg := &DBConfig{
+		Type:     DBTypeOracle,
+		Host:     "localhost",
+		Port:     1521,
+		User:     "sys",
+		Password: "test123",
+		Database: "ORCL",
+		Extra:    map[string]string{"ORACLE_HOME": "/opt/oracle/product/19c/dbhome_1", "ORACLE_SID": "ORCL", "ENABLE_COMPRESSION": "true"},
+	}
+	o, err := NewOracleBackup(cfg)
+	if err != nil {
+		t.Fatalf("NewOracleBackup failed: %v", err)
+	}
+	opts := BackupOptions{}
 	script, err := o.buildBackupScript(opts, testAbsBackupDir())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -631,8 +642,20 @@ func TestOracleBackup_BuildFullRestoreScript_AutoRestoreControlFileWithTag(t *te
 }
 
 func TestOracleBackup_BuildBackupScript_IncrementalWithRetention(t *testing.T) {
-	o := newTestOracleBackup(t)
-	opts := BackupOptions{Mode: BackupModeIncremental, RetentionDays: 14}
+	cfg := &DBConfig{
+		Type:     DBTypeOracle,
+		Host:     "localhost",
+		Port:     1521,
+		User:     "sys",
+		Password: "test123",
+		Database: "ORCL",
+		Extra:    map[string]string{"ORACLE_HOME": "/opt/oracle/product/19c/dbhome_1", "ORACLE_SID": "ORCL", "RETENTION_DAYS": "14"},
+	}
+	o, err := NewOracleBackup(cfg)
+	if err != nil {
+		t.Fatalf("NewOracleBackup failed: %v", err)
+	}
+	opts := BackupOptions{Mode: BackupModeIncremental}
 	script, err := o.buildBackupScript(opts, testAbsBackupDir())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -644,8 +667,20 @@ func TestOracleBackup_BuildBackupScript_IncrementalWithRetention(t *testing.T) {
 }
 
 func TestOracleBackup_BuildBackupScript_FullNoRetention(t *testing.T) {
-	o := newTestOracleBackup(t)
-	opts := BackupOptions{Mode: BackupModeFull, RetentionDays: 14}
+	cfg := &DBConfig{
+		Type:     DBTypeOracle,
+		Host:     "localhost",
+		Port:     1521,
+		User:     "sys",
+		Password: "test123",
+		Database: "ORCL",
+		Extra:    map[string]string{"ORACLE_HOME": "/opt/oracle/product/19c/dbhome_1", "ORACLE_SID": "ORCL", "RETENTION_DAYS": "14"},
+	}
+	o, err := NewOracleBackup(cfg)
+	if err != nil {
+		t.Fatalf("NewOracleBackup failed: %v", err)
+	}
+	opts := BackupOptions{Mode: BackupModeFull}
 	script, err := o.buildBackupScript(opts, testAbsBackupDir())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -666,17 +701,5 @@ func TestOracleBackup_BuildBackupScript_IncrementalDefaultRetention(t *testing.T
 
 	if !strings.Contains(script, "CONFIGURE RETENTION POLICY TO RECOVERY WINDOW OF 7 DAYS") {
 		t.Errorf("incremental backup with default retention should use 7 days, got: %s", script)
-	}
-}
-
-func TestOracleBackup_Restore_RejectsIncrementalMode(t *testing.T) {
-	o := newTestOracleBackup(t)
-	opts := RestoreOptions{RestoreMode: RestoreModeIncremental}
-	_, err := o.Restore(context.Background(), opts, nil)
-	if err == nil {
-		t.Error("Oracle Restore should reject RestoreModeIncremental")
-	}
-	if !strings.Contains(err.Error(), "incremental") {
-		t.Errorf("error message should mention incremental, got: %v", err)
 	}
 }

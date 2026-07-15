@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -29,6 +30,10 @@ const (
 	extraDamengInstance    = "DM_INSTANCE"
 	extraDamengDataDir     = "DM_DATA_DIR"
 	extraAutoGhostCleanup  = "AUTO_GHOST_CLEANUP"
+	extraRetentionDays     = "RETENTION_DAYS"
+	extraParallelWorkers   = "PARALLEL_WORKERS"
+	extraCompressionLevel  = "COMPRESSION_LEVEL"
+	extraEnableCompression = "ENABLE_COMPRESSION"
 	extraDefaultTrue       = "true"
 )
 
@@ -132,11 +137,39 @@ var extraSpecs = map[string]ExtraSpec{
 				Description: "是否在备份/还原前自动执行 RMAN 幽灵对象清理（CROSSCHECK + DELETE EXPIRED + DELETE OBSOLETE），默认 true",
 				Default:     extraDefaultTrue,
 			},
+			{
+				Key:         extraRetentionDays,
+				Required:    false,
+				Description: "增量策略保留窗口天数（仅 Oracle RMAN 支持，默认 7，配合 incremental/differential/level0 模式使用）",
+				Default:     "7",
+			},
+			{
+				Key:         extraParallelWorkers,
+				Required:    false,
+				Description: "RMAN 并行通道数（默认 2）",
+				Default:     "2",
+			},
+			{
+				Key:         extraCompressionLevel,
+				Required:    false,
+				Description: "RMAN 压缩级别（0=不指定; 1-3=LOW, 4-6=MEDIUM, 7-9=HIGH），默认 0",
+				Default:     "0",
+			},
+			{
+				Key:         extraEnableCompression,
+				Required:    false,
+				Description: "是否启用 RMAN 压缩（AS COMPRESSED BACKUPSET），默认 true",
+				Default:     extraDefaultTrue,
+			},
 		},
 		Example: `{
   "ORACLE_HOME": "/opt/oracle/product/19c/dbhome_1",
   "ORACLE_SID": "ORCL",
-  "AUTO_GHOST_CLEANUP": "true"
+  "AUTO_GHOST_CLEANUP": "true",
+  "RETENTION_DAYS": "7",
+  "PARALLEL_WORKERS": "2",
+  "COMPRESSION_LEVEL": "0",
+  "ENABLE_COMPRESSION": "true"
 }`,
 	},
 	dbTypeMSSQL: {
@@ -155,10 +188,17 @@ var extraSpecs = map[string]ExtraSpec{
 				Description: "认证方式：windows（Windows 身份验证）或 sql（SQL Server 身份验证，默认）",
 				Default:     authTypeSQL,
 			},
+			{
+				Key:         extraEnableCompression,
+				Required:    false,
+				Description: "是否启用压缩（COMPRESSION），默认 true",
+				Default:     extraDefaultTrue,
+			},
 		},
 		Example: `{
   "INSTANCE": "SQLEXPRESS",
-  "AUTH_TYPE": "windows"
+  "AUTH_TYPE": "windows",
+  "ENABLE_COMPRESSION": "true"
 }`,
 	},
 	dbTypeDameng: {
@@ -187,12 +227,33 @@ var extraSpecs = map[string]ExtraSpec{
 				Description: "是否在物理备份前自动清理归档目录中不属于当前实例的幽灵归档文件，默认 true",
 				Default:     extraDefaultTrue,
 			},
+			{
+				Key:         extraParallelWorkers,
+				Required:    false,
+				Description: "并行工作线程数（dexp PARALLEL / dmrman PARALLEL，默认 2）",
+				Default:     "2",
+			},
+			{
+				Key:         extraCompressionLevel,
+				Required:    false,
+				Description: "压缩级别（1-9，默认 0 即不指定级别）",
+				Default:     "0",
+			},
+			{
+				Key:         extraEnableCompression,
+				Required:    false,
+				Description: "是否启用压缩（COMPRESSED），默认 true",
+				Default:     extraDefaultTrue,
+			},
 		},
 		Example: `{
   "DM_HOME": "/opt/dmdbms",
   "DM_INSTANCE": "DMSERVER",
   "DM_DATA_DIR": "/opt/dmdbms/data/DAMENG",
-  "AUTO_GHOST_CLEANUP": "true"
+  "AUTO_GHOST_CLEANUP": "true",
+  "PARALLEL_WORKERS": "2",
+  "COMPRESSION_LEVEL": "0",
+  "ENABLE_COMPRESSION": "true"
 }`,
 	},
 }
@@ -286,6 +347,19 @@ func (e *TypedExtra) GetBoolDefault(key string, defaultVal bool) bool {
 	return e.GetBool(key)
 }
 
+// GetIntDefault 获取整数类型的 extra 参数，键未设置或解析失败时返回默认值。
+func (e *TypedExtra) GetIntDefault(key string, defaultVal int) int {
+	v := e.GetString(key)
+	if v == "" {
+		return defaultVal
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return defaultVal
+	}
+	return n
+}
+
 // IsSet 检查 extra 参数是否已设置。
 func (e *TypedExtra) IsSet(key string) bool {
 	if e.extra == nil {
@@ -369,6 +443,28 @@ func (e *TypedExtra) DamengDataDir() string { return e.GetString(extraDamengData
 // AutoGhostCleanup 返回是否在备份/还原前自动执行幽灵对象清理，默认 true。
 func (e *TypedExtra) AutoGhostCleanup() bool {
 	return e.GetBoolDefault(extraAutoGhostCleanup, true)
+}
+
+// 备份行为便捷访问方法
+
+// RetentionDays 返回增量策略保留窗口天数，默认 7。
+func (e *TypedExtra) RetentionDays() int {
+	return e.GetIntDefault(extraRetentionDays, 7)
+}
+
+// ParallelWorkers 返回并行工作线程数，默认 2。
+func (e *TypedExtra) ParallelWorkers() int {
+	return e.GetIntDefault(extraParallelWorkers, 2)
+}
+
+// CompressionLevel 返回压缩级别，默认 0（不指定级别）。
+func (e *TypedExtra) CompressionLevel() int {
+	return e.GetIntDefault(extraCompressionLevel, 0)
+}
+
+// EnableCompression 返回是否启用压缩，默认 true。
+func (e *TypedExtra) EnableCompression() bool {
+	return e.GetBoolDefault(extraEnableCompression, true)
 }
 
 // validKeysString 返回规范中所有有效键名的逗号分隔字符串。

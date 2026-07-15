@@ -144,40 +144,6 @@ func CopyDir(srcDir, dstDir string) error {
 	})
 }
 
-// CopyFile 复制单个文件从 src 到 dst
-func CopyFile(src, dst string) (err error) {
-	sourceFile, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer sourceFile.Close()
-
-	dstFile, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		closeErr := dstFile.Close()
-		if err == nil {
-			err = closeErr
-		}
-	}()
-
-	if _, err = io.Copy(dstFile, sourceFile); err != nil {
-		return err
-	}
-
-	if err = dstFile.Sync(); err != nil {
-		return err
-	}
-
-	sourceInfo, err := os.Stat(src)
-	if err != nil {
-		return err
-	}
-	return os.Chmod(dst, sourceInfo.Mode())
-}
-
 // EnsureDir 确保目录存在，不存在则创建
 func EnsureDir(path string) error {
 	return os.MkdirAll(path, 0o755)

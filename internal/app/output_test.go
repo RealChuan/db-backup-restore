@@ -2,11 +2,13 @@ package app
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/RealChuan/db-backup-restore/internal/backup"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestOutputWriter_Text_SimpleSuccess(t *testing.T) {
@@ -28,7 +30,7 @@ func TestOutputWriter_Text_DataSimpleValues(t *testing.T) {
 	result := &OperationResult{
 		Success:   true,
 		Operation: "backup",
-		Message:   "备份成功",
+		Message:   MsgBackupSuccess,
 		Data: map[string]interface{}{
 			"file":     "/backup/mysql_20260701.sql",
 			"size":     "1.5 MB",
@@ -237,4 +239,89 @@ func TestOutputWriter_Text_ListDrivers(t *testing.T) {
 	if got := buf.String(); got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
+}
+
+// decodeJSON 辅助函数：将缓冲区内容解码为 OperationResult
+func decodeJSON(t *testing.T, b []byte) OperationResult {
+	t.Helper()
+	var got OperationResult
+	require.NoError(t, json.Unmarshal(bytes.TrimSpace(b), &got), "JSON 解析失败: %s", b)
+	return got
+}
+
+func TestOutputWriter_JSON_SuccessWithAllFields(t *testing.T) {
+	var buf bytes.Buffer
+	w := &OutputWriter{format: backup.OutputFormatJSON, writer: &buf}
+	result := &OperationResult{
+		Success:   true,
+		Operation: "backup",
+		DBType:    "mysql",
+		Message:   MsgBackupSuccess,
+		Data:      map[string]interface{}{"file": "/backup/db.sql"},
+	}
+	require.NoError(t, w.Write(result))
+
+	got := decodeJSON(t, buf.Bytes())
+	assert.Equal(t, true, got.Success)
+	assert.Equal(t, "backup", got.Operation)
+	assert.Equal(t, "mysql", got.DBType)
+	assert.Equal(t, MsgBackupSuccess, got.Message)
+	assert.Equal(t, "/backup/db.sql", got.Data["file"])
+	assert.Empty(t, got.Error, "成功时 Error 应为空（omitempty）")
+}
+
+func TestOutputWriter_JSON_FailureWithError(t *testing.T) {
+	var buf bytes.Buffer
+	w := &OutputWriter{format: backup.OutputFormatJSON, writer: &buf}
+	result := &OperationResult{
+		Success:   false,
+		Operation: "restore",
+		DBType:    "postgresql",
+		Error:     "连接超时",
+	}
+	require.NoError(t, w.Write(result))
+
+	got := decodeJSON(t, buf.Bytes())
+	assert.Equal(t, false, got.Success)
+	assert.Equal(t, "restore", got.Operation)
+	assert.Equal(t, "连接超时", got.Error)
+	// 失败时 Message 应为空（omitempty）
+	assert.Empty(t, got.Message)
+	// Data 为 nil 时 omitempty 应省略
+	assert.Nil(t, got.Data)
+}
+
+func TestOutputWriter_JSON_OmitemptyBehavior(t *testing.T) {
+	var buf bytes.Buffer
+	w := &OutputWriter{format: backup.OutputFormatJSON, writer: &buf}
+	// 最小字段：仅 Success 和 Operation（其他字段为零值，应被 omitempty 省略）
+	result := &OperationResult{Success: true, Operation: "verify_status"}
+	require.NoError(t, w.Write(result))
+
+	// 验证零值字段被省略（不在 JSON 输出中）
+	raw := buf.String()
+	assert.Contains(t, raw, `"success": true`)
+	assert.Contains(t, raw, `"operation": "verify_status"`)
+	assert.NotContains(t, raw, `"db_type"`, "零值 DBType 应被 omitempty 省略")
+	assert.NotContains(t, raw, `"message"`, "零值 Message 应被 omitempty 省略")
+	assert.NotContains(t, raw, `"data"`, "nil Data 应被 omitempty 省略")
+	assert.NotContains(t, raw, `"error"`, "零值 Error 应被 omitempty 省略")
+}
+
+func TestOutputWriter_JSON_EmptyDataOmitted(t *testing.T) {
+	var buf bytes.Buffer
+	w := &OutputWriter{format: backup.OutputFormatJSON, writer: &buf}
+	// 非 nil 但空的 Data map - 由于 omitempty，应与 nil Data 行为一致（字段被省略）
+	result := &OperationResult{
+		Success:   true,
+		Operation: "list",
+		Data:      map[string]interface{}{},
+	}
+	require.NoError(t, w.Write(result))
+
+	raw := buf.String()
+	assert.NotContains(t, raw, `"data"`, "空 map 由于 omitempty 应被省略")
+
+	got := decodeJSON(t, buf.Bytes())
+	assert.Nil(t, got.Data, "空 map 被省略后，反序列化的 Data 应为 nil")
 }

@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 )
 
@@ -147,12 +146,4 @@ func (n *Notifier) String() string {
 		return "***"
 	}
 	return parsed.Scheme + "://" + parsed.Host + "/***"
-}
-
-// ValidateWebhookURL 导出校验函数供 CLI 层使用
-var ValidateWebhookURL = validateWebhookURL
-
-// IsHTTPSURL 检查 URL 是否为 HTTPS
-func IsHTTPSURL(rawURL string) bool {
-	return strings.HasPrefix(strings.ToLower(rawURL), "https://")
 }

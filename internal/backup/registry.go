@@ -70,8 +70,8 @@ func GetDriverMetadata(name string) (DriverMetadata, bool) {
 	return info.metadata, exists
 }
 
-// GetDriverFactory 获取指定驱动的工厂函数
-func GetDriverFactory(name string) (DriverFactory, bool) {
+// getDriverFactory 获取指定驱动的工厂函数
+func getDriverFactory(name string) (DriverFactory, bool) {
 	driverRegistry.RLock()
 	defer driverRegistry.RUnlock()
 	info, exists := driverRegistry.drivers[name]
@@ -113,7 +113,7 @@ func NewBackup(config *DBConfig) (DatabaseBackup, error) {
 		return nil, errors.New("必须指定数据库类型")
 	}
 
-	factory, exists := GetDriverFactory(config.Type)
+	factory, exists := getDriverFactory(config.Type)
 	if !exists {
 		return nil, errors.New("不支持的数据库类型: " + config.Type + ", 支持的类型: " + formatDriverList())
 	}
@@ -130,7 +130,7 @@ func ValidateDriverConfig(config *DBConfig) error {
 		return errors.New("必须指定数据库类型")
 	}
 
-	if _, exists := GetDriverFactory(config.Type); !exists {
+	if _, exists := getDriverFactory(config.Type); !exists {
 		return errors.New("不支持的数据库类型: " + config.Type + ", 支持的类型: " + formatDriverList())
 	}
 

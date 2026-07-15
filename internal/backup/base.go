@@ -124,7 +124,11 @@ var backupFilenameRegex = regexp.MustCompile(`^(.+)_(\d{8})_(\d{6})\.sql$`)
 
 // ExtractDatabaseName 从备份文件名中提取数据库名
 func ExtractDatabaseName(backupFile string) string {
-	baseName := filepath.Base(backupFile)
+	// 兼容 Windows 路径：在 Linux 上 filepath.Base 无法识别反斜杠分隔符
+	if i := strings.LastIndexAny(backupFile, `/\`); i >= 0 {
+		backupFile = backupFile[i+1:]
+	}
+	baseName := backupFile
 	if matches := backupFilenameRegex.FindStringSubmatch(baseName); len(matches) > 1 {
 		return matches[1]
 	}

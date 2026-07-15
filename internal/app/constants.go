@@ -39,6 +39,7 @@ const (
 
 // 消息常量，用于 OperationResult.Message。
 const (
+	MsgBackupSuccess = "备份成功"
 	MsgDeleteSuccess = "删除成功"
 )
 

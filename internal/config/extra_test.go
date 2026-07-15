@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestValidateExtra_MySQL(t *testing.T) {
@@ -430,5 +432,29 @@ func TestTypedExtra_Dameng(t *testing.T) {
 	}
 	if got := extra.DamengDataDir(); got != "/opt/dmdbms/data/DAMENG" {
 		t.Errorf("DamengDataDir() = %v, want /opt/dmdbms/data/DAMENG", got)
+	}
+}
+
+func TestTypedExtra_GetIntDefault(t *testing.T) {
+	tests := []struct {
+		name       string
+		extra      map[string]string
+		key        string
+		defaultVal int
+		want       int
+	}{
+		{name: "key exists and valid", extra: map[string]string{"NUM": "42"}, key: "NUM", defaultVal: 0, want: 42},
+		{name: "key not set", extra: map[string]string{}, key: "NUM", defaultVal: 7, want: 7},
+		{name: "key exists but invalid", extra: map[string]string{"NUM": "abc"}, key: "NUM", defaultVal: 3, want: 3},
+		{name: "negative value", extra: map[string]string{"NUM": "-1"}, key: "NUM", defaultVal: 0, want: -1},
+		{name: "nil extra", extra: nil, key: "NUM", defaultVal: 5, want: 5},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dbCfg := &DBConfig{Extra: tt.extra}
+			dbCfg.SetDefaults()
+			got := dbCfg.GetExtraTyped().GetIntDefault(tt.key, tt.defaultVal)
+			assert.Equal(t, tt.want, got)
+		})
 	}
 }
