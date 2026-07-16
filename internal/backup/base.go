@@ -27,33 +27,33 @@ func (b *BaseBackup) GetConfig() *DBConfig {
 }
 
 // RegisterBackup 默认实现：大多数数据库不支持注册备份到目录库
-func (b *BaseBackup) RegisterBackup(ctx context.Context, _ string) error {
-	return NewNotSupportedError(ctx, "RegisterBackup", b.config.Type)
+func (b *BaseBackup) RegisterBackup(_ context.Context, _ string) error {
+	return NewNotSupportedError("RegisterBackup", b.config.Type)
 }
 
 // UnregisterBackup 默认实现：大多数数据库不支持取消注册备份
-func (b *BaseBackup) UnregisterBackup(ctx context.Context, _ string) error {
-	return NewNotSupportedError(ctx, "UnregisterBackup", b.config.Type)
+func (b *BaseBackup) UnregisterBackup(_ context.Context, _ string) error {
+	return NewNotSupportedError("UnregisterBackup", b.config.Type)
 }
 
 // VerifyBackupStatus 默认实现：大多数数据库不支持检查备份状态
-func (b *BaseBackup) VerifyBackupStatus(ctx context.Context) error {
-	return NewNotSupportedError(ctx, "VerifyBackupStatus", b.config.Type)
+func (b *BaseBackup) VerifyBackupStatus(_ context.Context) error {
+	return NewNotSupportedError("VerifyBackupStatus", b.config.Type)
 }
 
 // DeleteInvalidBackups 默认实现：大多数数据库不支持删除无效备份记录
-func (b *BaseBackup) DeleteInvalidBackups(ctx context.Context, _ ...BackupOptions) error {
-	return NewNotSupportedError(ctx, "DeleteInvalidBackups", b.config.Type)
+func (b *BaseBackup) DeleteInvalidBackups(_ context.Context, _ ...BackupOptions) error {
+	return NewNotSupportedError("DeleteInvalidBackups", b.config.Type)
 }
 
 // ValidateBackup 默认实现：大多数数据库不支持完整验证备份文件完整性
-func (b *BaseBackup) ValidateBackup(ctx context.Context, _ string, _ ...BackupOptions) error {
-	return NewNotSupportedError(ctx, "ValidateBackup", b.config.Type)
+func (b *BaseBackup) ValidateBackup(_ context.Context, _ string, _ ...BackupOptions) error {
+	return NewNotSupportedError("ValidateBackup", b.config.Type)
 }
 
 // ListDatabases 默认实现：大多数数据库不支持列出所有数据库（如 Oracle 基于实例架构）。
-func (b *BaseBackup) ListDatabases(ctx context.Context) ([]string, error) {
-	return nil, NewNotSupportedError(ctx, "ListDatabases", b.config.Type)
+func (b *BaseBackup) ListDatabases(_ context.Context) ([]string, error) {
+	return nil, NewNotSupportedError("ListDatabases", b.config.Type)
 }
 
 // parseDatabaseNames 解析数据库名称（支持逗号分隔的多个数据库）
@@ -105,13 +105,13 @@ func (b *BaseBackup) getBackupDir(options []BackupOptions) string {
 }
 
 // EnableArchiveLogMode 默认实现：大多数数据库不支持归档模式管理（仅 Oracle 和达梦支持）
-func (b *BaseBackup) EnableArchiveLogMode(ctx context.Context, _ string) error {
-	return NewNotSupportedError(ctx, "EnableArchiveLogMode", b.config.Type)
+func (b *BaseBackup) EnableArchiveLogMode(_ context.Context, _ string) error {
+	return NewNotSupportedError("EnableArchiveLogMode", b.config.Type)
 }
 
 // DisableArchiveLogMode 默认实现：大多数数据库不支持归档模式管理（仅 Oracle 和达梦支持）
-func (b *BaseBackup) DisableArchiveLogMode(ctx context.Context) error {
-	return NewNotSupportedError(ctx, "DisableArchiveLogMode", b.config.Type)
+func (b *BaseBackup) DisableArchiveLogMode(_ context.Context) error {
+	return NewNotSupportedError("DisableArchiveLogMode", b.config.Type)
 }
 
 // Close 默认实现：无需释放资源

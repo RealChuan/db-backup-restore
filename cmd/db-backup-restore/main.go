@@ -12,5 +12,5 @@ func main() {
 		fmt.Fprintf(os.Stderr, "注册驱动失败: %v\n", err)
 		os.Exit(1)
 	}
-	Execute()
+	os.Exit(Execute())
 }

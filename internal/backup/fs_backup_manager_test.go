@@ -252,3 +252,240 @@ func TestFileSystemBackupManager_DeleteBackup_GlobNotMatchingUnrelatedFiles(t *t
 		t.Error("无关备份的日志文件不应被删除")
 	}
 }
+
+func TestFileSystemBackupManager_ListBackups(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	createMixedBackups(t, tmpDir)
+
+	mgr := NewFileSystemBackupManager(tmpDir)
+	backups, err := mgr.ListBackups(context.TODO(), tmpDir)
+	if err != nil {
+		t.Fatalf("ListBackups 失败: %v", err)
+	}
+	if len(backups) != 3 {
+		t.Fatalf("期望 3 个备份, 得到 %d", len(backups))
+	}
+
+	// 验证按 BackupID 排序
+	if backups[0].BackupID != "db_backup_001.sql" {
+		t.Errorf("第一个备份 ID = %q, 期望 db_backup_001.sql", backups[0].BackupID)
+	}
+
+	t.Run("逻辑备份", func(t *testing.T) {
+		t.Parallel()
+		var found bool
+		for _, b := range backups {
+			if b.BackupID == "db_backup_001.sql" {
+				found = true
+				if b.BackupType != string(BackupTypeLogical) {
+					t.Errorf("备份类型 = %q, 期望 %q", b.BackupType, BackupTypeLogical)
+				}
+				if b.Size != int64(len("sql data")) {
+					t.Errorf("大小 = %d, 期望 %d", b.Size, len("sql data"))
+				}
+			}
+		}
+		if !found {
+			t.Error("未找到逻辑备份 db_backup_001.sql")
+		}
+	})
+
+	t.Run("物理备份", func(t *testing.T) {
+		t.Parallel()
+		var found bool
+		for _, b := range backups {
+			if b.BackupID == "db_physical" {
+				found = true
+				if b.BackupType != string(BackupTypePhysical) {
+					t.Errorf("备份类型 = %q, 期望 %q", b.BackupType, BackupTypePhysical)
+				}
+			}
+		}
+		if !found {
+			t.Error("未找到物理备份 db_physical")
+		}
+	})
+}
+
+// createMixedBackups 在 dir 下创建逻辑备份文件和物理备份目录
+func createMixedBackups(t *testing.T, dir string) {
+	t.Helper()
+
+	// 逻辑备份文件
+	logical1 := filepath.Join(dir, "db_backup_001.sql")
+	logical2 := filepath.Join(dir, "db_backup_002.sql.gz")
+	if err := os.WriteFile(logical1, []byte("sql data"), 0o644); err != nil {
+		t.Fatalf("创建逻辑备份文件失败: %v", err)
+	}
+	if err := os.WriteFile(logical2, []byte("gz data"), 0o644); err != nil {
+		t.Fatalf("创建逻辑备份文件失败: %v", err)
+	}
+
+	// 物理备份目录
+	physicalDir := filepath.Join(dir, "db_physical")
+	if err := os.MkdirAll(physicalDir, 0o755); err != nil {
+		t.Fatalf("创建物理备份目录失败: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(physicalDir, "data.bin"), []byte("physical"), 0o644); err != nil {
+		t.Fatalf("创建物理备份文件失败: %v", err)
+	}
+}
+
+func TestFileSystemBackupManager_ListBackups_EmptyDir(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	mgr := NewFileSystemBackupManager(tmpDir)
+
+	backups, err := mgr.ListBackups(context.TODO(), tmpDir)
+	if err != nil {
+		t.Fatalf("ListBackups 空目录不应报错: %v", err)
+	}
+	if len(backups) != 0 {
+		t.Errorf("空目录应返回 0 个备份, 得到 %d", len(backups))
+	}
+}
+
+func TestFileSystemBackupManager_ListBackups_NoBackupDir(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewFileSystemBackupManager("")
+
+	backups, err := mgr.ListBackups(context.TODO(), "")
+	if err == nil {
+		t.Fatal("未指定备份目录时应返回错误")
+	}
+	if backups != nil {
+		t.Errorf("错误时应返回 nil, 得到 %v", backups)
+	}
+}
+
+func TestFileSystemBackupManager_GetBackupInfo_LogicalFile(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	backupFile := filepath.Join(tmpDir, "test_backup.sql")
+	if err := os.WriteFile(backupFile, []byte("backup content"), 0o644); err != nil {
+		t.Fatalf("创建备份文件失败: %v", err)
+	}
+
+	mgr := NewFileSystemBackupManager(tmpDir)
+
+	info, err := mgr.GetBackupInfo(context.TODO(), filepath.Base(backupFile), tmpDir)
+	if err != nil {
+		t.Fatalf("GetBackupInfo 失败: %v", err)
+	}
+
+	if info["path"] != backupFile {
+		t.Errorf("path = %q, 期望 %q", info["path"], backupFile)
+	}
+	if info["size"] != "14" {
+		t.Errorf("size = %q, 期望 14", info["size"])
+	}
+	if info["backup_type"] != string(BackupTypeLogical) {
+		t.Errorf("backup_type = %q, 期望 %q", info["backup_type"], BackupTypeLogical)
+	}
+	if info["mod_time"] == "" {
+		t.Error("mod_time 不应为空")
+	}
+}
+
+func TestFileSystemBackupManager_GetBackupInfo_PhysicalDir(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	physicalDir := filepath.Join(tmpDir, "db_physical")
+	if err := os.MkdirAll(physicalDir, 0o755); err != nil {
+		t.Fatalf("创建物理备份目录失败: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(physicalDir, "data.bin"), []byte("physical data"), 0o644); err != nil {
+		t.Fatalf("创建物理备份文件失败: %v", err)
+	}
+
+	mgr := NewFileSystemBackupManager(tmpDir)
+
+	info, err := mgr.GetBackupInfo(context.TODO(), "db_physical", tmpDir)
+	if err != nil {
+		t.Fatalf("GetBackupInfo 失败: %v", err)
+	}
+
+	if info["backup_type"] != string(BackupTypePhysical) {
+		t.Errorf("backup_type = %q, 期望 %q", info["backup_type"], BackupTypePhysical)
+	}
+	if info["size"] == "" {
+		t.Error("物理备份 size 不应为空")
+	}
+}
+
+func TestFileSystemBackupManager_GetBackupInfo_NotExist(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	mgr := NewFileSystemBackupManager(tmpDir)
+
+	_, err := mgr.GetBackupInfo(context.TODO(), "nonexistent.sql", tmpDir)
+	if err == nil {
+		t.Fatal("不存在的备份应返回错误")
+	}
+}
+
+func TestFileSystemBackupManager_GetBackupInfo_EmptyID(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	mgr := NewFileSystemBackupManager(tmpDir)
+
+	_, err := mgr.GetBackupInfo(context.TODO(), "", tmpDir)
+	if err == nil {
+		t.Fatal("空 backupID 应返回错误")
+	}
+}
+
+func TestFileSystemBackupManager_DeleteBackup_AbsolutePath(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	backupFile := filepath.Join(tmpDir, "abs_backup.sql")
+	if err := os.WriteFile(backupFile, []byte("data"), 0o644); err != nil {
+		t.Fatalf("创建备份文件失败: %v", err)
+	}
+
+	mgr := NewFileSystemBackupManager(tmpDir)
+
+	// 使用绝对路径删除
+	if err := mgr.DeleteBackup(context.TODO(), backupFile, ""); err != nil {
+		t.Fatalf("DeleteBackup 绝对路径失败: %v", err)
+	}
+
+	if _, err := os.Stat(backupFile); !os.IsNotExist(err) {
+		t.Error("备份文件应被删除")
+	}
+}
+
+func TestFileSystemBackupManager_DeleteBackup_PathTraversalRejected(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	// 创建一个在 tmpDir 之外的文件
+	outsideFile := filepath.Join(filepath.Dir(tmpDir), "outside_target.sql")
+	if err := os.WriteFile(outsideFile, []byte("sensitive"), 0o644); err != nil {
+		t.Fatalf("创建外部文件失败: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(outsideFile) })
+
+	mgr := NewFileSystemBackupManager(tmpDir)
+
+	// 尝试用路径遍历删除 tmpDir 之外的文件
+	identifier := filepath.Join("..", "outside_target.sql")
+	err := mgr.DeleteBackup(context.TODO(), identifier, tmpDir)
+	if err == nil {
+		t.Fatal("路径遍历攻击应被拒绝")
+	}
+
+	// 文件不应被删除
+	if _, err := os.Stat(outsideFile); os.IsNotExist(err) {
+		t.Error("外部文件不应被路径遍历删除")
+	}
+}

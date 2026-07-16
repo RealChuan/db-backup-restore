@@ -1,6 +1,5 @@
 // Package logging provides a slog-based logging system that supports console
-// and file output, log rotation, audit logging, and context-based trace ID
-// propagation.
+// and file output, log rotation, and audit logging.
 package logging
 
 import (
@@ -12,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -580,56 +578,6 @@ func timestampReplacer(_ []string, a slog.Attr) slog.Attr {
 }
 
 // ---------------------------------------------------------------------------
-// Trace ID context management
-// ---------------------------------------------------------------------------
-
-type traceIDKeyType struct{}
-
-var traceIDKey traceIDKeyType
-
-// GenerateTraceID generates a new trace ID based on the current time and PID.
-func GenerateTraceID() string {
-	return strconv.FormatInt(time.Now().UnixNano(), 10) + "-" + strconv.Itoa(os.Getpid())
-}
-
-// WithTraceID stores the trace ID in the context.
-func WithTraceID(ctx context.Context, id string) context.Context {
-	return context.WithValue(ctx, traceIDKey, id)
-}
-
-// GetTraceID retrieves the trace ID from the context. Returns an empty string
-// if no trace ID is present.
-func GetTraceID(ctx context.Context) string {
-	if ctx == nil {
-		return ""
-	}
-	if id, ok := ctx.Value(traceIDKey).(string); ok {
-		return id
-	}
-	return ""
-}
-
-// WithTrace 从 context 中提取 trace 信息并附加到 logger
-func WithTrace(ctx context.Context, logger *slog.Logger) *slog.Logger {
-	if ctx == nil {
-		return logger
-	}
-	// 优先使用 OTel trace
-	otelTraceID := TraceIDFromContext(ctx)
-	if otelTraceID != "" {
-		return logger.With(
-			slog.String("trace_id", otelTraceID),
-			slog.String("span_id", SpanIDFromContext(ctx)),
-		)
-	}
-	// 回退到自定义 trace ID
-	if traceID, ok := ctx.Value(traceIDKey).(string); ok && traceID != "" {
-		return logger.With(slog.String("trace_id", traceID))
-	}
-	return logger
-}
-
-// ---------------------------------------------------------------------------
 // Convenience logging functions
 // ---------------------------------------------------------------------------
 
@@ -692,9 +640,6 @@ func logAt(ctx context.Context, level slog.Level, callerSkip int, msg string, ar
 	pc := pcs[0]
 
 	logger := L()
-	if id := GetTraceID(ctx); id != "" {
-		logger = logger.With(slog.String("trace_id", id))
-	}
 	if !logger.Enabled(ctx, level) {
 		return
 	}

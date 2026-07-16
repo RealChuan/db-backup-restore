@@ -41,7 +41,7 @@ func NewMSSQLBackup(config *DBConfig) (*MSSQLBackup, error) {
 // Backup 执行 SQL Server 备份
 func (m *MSSQLBackup) Backup(ctx context.Context, opts BackupOptions, callback ProgressCallback) (*BackupResult, error) {
 	if opts.Mode == BackupModeIncremental || opts.Mode == BackupModeDifferential {
-		return nil, NewNotSupportedError(ctx, "backup", "mssql")
+		return nil, NewNotSupportedError("backup", "mssql")
 	}
 
 	if opts.Type == BackupTypeLogical {

@@ -17,8 +17,8 @@ const (
 	windowsOS     = "windows"
 )
 
-// StartWindowsService 启动 Windows 服务
-func StartWindowsService(ctx context.Context, serviceName string) error {
+// startWindowsService 启动 Windows 服务
+func startWindowsService(ctx context.Context, serviceName string) error {
 	commands := []struct {
 		cmd  string
 		args []string
@@ -45,8 +45,8 @@ func StartWindowsService(ctx context.Context, serviceName string) error {
 	return fmt.Errorf("无法启动 Windows 服务 [%s]: %w, output: %s", serviceName, lastErr, lastOutput)
 }
 
-// StopWindowsService 停止 Windows 服务并发送停止信号后等待服务完全停止
-func StopWindowsService(ctx context.Context, serviceName string) error {
+// stopWindowsService 停止 Windows 服务并发送停止信号后等待服务完全停止
+func stopWindowsService(ctx context.Context, serviceName string) error {
 	commands := []struct {
 		cmd  string
 		args []string
@@ -64,7 +64,7 @@ func StopWindowsService(ctx context.Context, serviceName string) error {
 			slog.Info("命令执行", "cmd", c.cmd, "args", strings.Join(c.args, " "))
 			slog.Debug("命令输出", "output", string(output))
 			// sc stop 是异步的，需要等待服务完全停止
-			if err := WaitForWindowsServiceStopped(ctx, serviceName); err != nil {
+			if err := waitForWindowsServiceStopped(ctx, serviceName); err != nil {
 				slog.Warn("等待服务停止超时，继续执行", "service", serviceName, "error", err)
 			}
 			slog.Info("Windows 服务已停止", "service", serviceName)
@@ -77,12 +77,12 @@ func StopWindowsService(ctx context.Context, serviceName string) error {
 	return fmt.Errorf("无法停止 Windows 服务 [%s]: %w, output: %s", serviceName, lastErr, lastOutput)
 }
 
-// IsWindowsServiceStopped 检查 Windows 服务是否已完全停止
+// isWindowsServiceStopped 检查 Windows 服务是否已完全停止
 // 检查 STOPPED 状态而非简单取反 RUNNING 状态，避免 STOP_PENDING 状态下的假阳性：
 // 服务从 RUNNING → STOP_PENDING → STOPPED 过渡期间，
 // 若仅检查非 RUNNING，则在 STOP_PENDING 时就返回 true（错误），
-// 而 IsWindowsServiceStopped 在 STOP_PENDING 时返回 false（正确）。
-func IsWindowsServiceStopped(ctx context.Context, serviceName string) bool {
+// 而 isWindowsServiceStopped 在 STOP_PENDING 时返回 false（正确）。
+func isWindowsServiceStopped(ctx context.Context, serviceName string) bool {
 	cmd := exec.CommandContext(ctx, "sc", "query", serviceName)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -92,17 +92,17 @@ func IsWindowsServiceStopped(ctx context.Context, serviceName string) bool {
 	return !strings.Contains(s, "RUNNING") && strings.Contains(s, "STOPPED")
 }
 
-// WaitForWindowsServiceStopped 轮询等待 Windows 服务完全停止
+// waitForWindowsServiceStopped 轮询等待 Windows 服务完全停止
 // 超时时间为 30 秒，每 500 毫秒检查一次
-// 使用 IsWindowsServiceStopped 检查 STOPPED 状态，确保服务真正停止后再返回
-func WaitForWindowsServiceStopped(ctx context.Context, serviceName string) error {
+// 使用 isWindowsServiceStopped 检查 STOPPED 状态，确保服务真正停止后再返回
+func waitForWindowsServiceStopped(ctx context.Context, serviceName string) error {
 	const (
 		interval   = 500 * time.Millisecond
 		maxWait    = 30 * time.Second
 		maxRetries = int(maxWait / interval)
 	)
 	for i := 0; i < maxRetries; i++ {
-		if IsWindowsServiceStopped(ctx, serviceName) {
+		if isWindowsServiceStopped(ctx, serviceName) {
 			// 服务已报告 STOPPED 状态，额外等待一小段时间确保文件锁释放
 			select {
 			case <-ctx.Done():
@@ -192,7 +192,7 @@ func startWithCustomCommand(ctx context.Context, command string, args []string, 
 // stopWithSystemService 使用系统服务管理停止服务
 func stopWithSystemService(ctx context.Context, serviceName string) error {
 	if IsWindows() {
-		return StopWindowsService(ctx, serviceName)
+		return stopWindowsService(ctx, serviceName)
 	}
 
 	// Linux: 优先尝试 systemctl，再尝试 service
@@ -224,7 +224,7 @@ func stopWithSystemService(ctx context.Context, serviceName string) error {
 // startWithSystemService 使用系统服务管理启动服务
 func startWithSystemService(ctx context.Context, serviceName string) error {
 	if IsWindows() {
-		return StartWindowsService(ctx, serviceName)
+		return startWindowsService(ctx, serviceName)
 	}
 
 	// Linux: 优先尝试 systemctl，再尝试 service

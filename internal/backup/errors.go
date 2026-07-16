@@ -1,12 +1,9 @@
 package backup
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"time"
-
-	"github.com/RealChuan/db-backup-restore/internal/logging"
 )
 
 // ErrorType 错误类型
@@ -24,7 +21,6 @@ type BackupError struct {
 	Message   string
 	Cause     error
 	Timestamp time.Time
-	TraceID   string
 }
 
 func (e *BackupError) Error() string {
@@ -40,14 +36,13 @@ func (e *BackupError) Unwrap() error {
 }
 
 // NewNotSupportedError 创建不支持操作错误
-func NewNotSupportedError(ctx context.Context, op, dbType string) error {
+func NewNotSupportedError(op, dbType string) error {
 	return &BackupError{
 		Type:      ErrorTypeNotSupported,
 		Op:        op,
 		DBType:    dbType,
 		Message:   fmt.Sprintf("%s 操作在 %s 数据库上不支持", op, dbType),
 		Timestamp: time.Now(),
-		TraceID:   logging.GetTraceID(ctx),
 	}
 }
 

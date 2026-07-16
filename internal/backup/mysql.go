@@ -43,7 +43,7 @@ func NewMySQLBackup(config *DBConfig) (*MySQLBackup, error) {
 // Backup 执行 MySQL 备份（根据类型调用不同实现）
 func (m *MySQLBackup) Backup(ctx context.Context, opts BackupOptions, callback ProgressCallback) (*BackupResult, error) {
 	if opts.Mode == BackupModeIncremental || opts.Mode == BackupModeDifferential {
-		return nil, NewNotSupportedError(ctx, "backup", "mysql")
+		return nil, NewNotSupportedError("backup", "mysql")
 	}
 
 	backupDir := opts.TargetPath

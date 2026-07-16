@@ -1,11 +1,7 @@
 package logging
 
 import (
-	"context"
 	"log/slog"
-	"os"
-	"regexp"
-	"strconv"
 	"strings"
 	"testing"
 )
@@ -118,89 +114,6 @@ func TestArgsToAttrs_键值内容正确(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// WithTraceID / GetTraceID
-// ---------------------------------------------------------------------------
-
-func TestWithTraceID_GetTraceID(t *testing.T) {
-	t.Parallel()
-
-	t.Run("存取traceID", func(t *testing.T) {
-		t.Parallel()
-		ctx := WithTraceID(context.Background(), "abc-123")
-		if got := GetTraceID(ctx); got != "abc-123" {
-			t.Errorf("GetTraceID() = %q, 期望 %q", got, "abc-123")
-		}
-	})
-
-	t.Run("空context返回空字符串", func(t *testing.T) {
-		t.Parallel()
-		if got := GetTraceID(context.Background()); got != "" {
-			t.Errorf("GetTraceID(空context) = %q, 期望空字符串", got)
-		}
-	})
-
-	t.Run("nil_context返回空字符串", func(t *testing.T) {
-		t.Parallel()
-		if got := GetTraceID(context.TODO()); got != "" {
-			t.Errorf("GetTraceID(context.TODO()) = %q, 期望空字符串", got)
-		}
-	})
-
-	t.Run("覆盖已存在的traceID", func(t *testing.T) {
-		t.Parallel()
-		ctx := WithTraceID(context.Background(), "first")
-		ctx = WithTraceID(ctx, "second")
-		if got := GetTraceID(ctx); got != "second" {
-			t.Errorf("GetTraceID() = %q, 期望 %q", got, "second")
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
-// GenerateTraceID
-// ---------------------------------------------------------------------------
-
-func TestGenerateTraceID(t *testing.T) {
-	t.Parallel()
-
-	id := GenerateTraceID()
-	if id == "" {
-		t.Fatal("GenerateTraceID() 返回空字符串")
-	}
-
-	// 格式: timestamp-pid
-	parts := strings.SplitN(id, "-", 2)
-	if len(parts) != 2 {
-		t.Fatalf("GenerateTraceID() = %q, 期望格式为 timestamp-pid", id)
-	}
-
-	// 时间戳部分应为纯数字
-	for _, ch := range parts[0] {
-		if ch < '0' || ch > '9' {
-			t.Fatalf("时间戳部分包含非数字字符: %q", parts[0])
-		}
-	}
-
-	// PID 部分应为当前进程 ID
-	if parts[1] != strconv.Itoa(os.Getpid()) {
-		t.Errorf("PID 部分 = %q, 期望 %d", parts[1], os.Getpid())
-	}
-}
-
-func TestGenerateTraceID_每次调用不同(_ *testing.T) {
-	// 不使用 t.Parallel()，因为 Windows 上 time.Now().UnixNano() 分辨率有限，
-	// 并行执行时两次调用可能落在同一纳秒内。
-	id1 := GenerateTraceID()
-	// 确保时间推进
-	for {
-		id2 := GenerateTraceID()
-		if id1 != id2 {
-			break
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
 // levelString
 // ---------------------------------------------------------------------------
 
@@ -267,65 +180,5 @@ func TestDefaultConfig(t *testing.T) {
 				t.Errorf("DefaultConfig().%s = %v, 期望 %v", tt.name, tt.got, tt.want)
 			}
 		})
-	}
-}
-
-// ---------------------------------------------------------------------------
-// WithTrace
-// ---------------------------------------------------------------------------
-
-func TestWithTrace(t *testing.T) {
-	t.Parallel()
-
-	baseLogger := slog.Default()
-
-	t.Run("nil_context返回原logger", func(t *testing.T) {
-		t.Parallel()
-		result := WithTrace(context.TODO(), baseLogger)
-		if result != baseLogger {
-			t.Error("WithTrace(context.TODO(), logger) 应返回原 logger")
-		}
-	})
-
-	t.Run("空context返回原logger", func(t *testing.T) {
-		t.Parallel()
-		result := WithTrace(context.Background(), baseLogger)
-		if result != baseLogger {
-			t.Error("WithTrace(空context, logger) 应返回原 logger")
-		}
-	})
-
-	t.Run("带traceID的context返回新logger", func(t *testing.T) {
-		t.Parallel()
-		ctx := WithTraceID(context.Background(), "test-trace-123")
-		result := WithTrace(ctx, baseLogger)
-		if result == baseLogger {
-			t.Error("WithTrace(带traceID的ctx, logger) 应返回新 logger")
-		}
-	})
-
-	t.Run("空traceID的context返回原logger", func(t *testing.T) {
-		t.Parallel()
-		ctx := WithTraceID(context.Background(), "")
-		result := WithTrace(ctx, baseLogger)
-		if result != baseLogger {
-			t.Error("WithTrace(空traceID的ctx, logger) 应返回原 logger")
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
-// TraceID 格式验证（使用 regexp 而非硬编码 PID）
-// ---------------------------------------------------------------------------
-
-func TestGenerateTraceID_格式验证(t *testing.T) {
-	t.Parallel()
-
-	id := GenerateTraceID()
-
-	// 格式: <纯数字>-<纯数字>
-	pattern := regexp.MustCompile(`^\d+-\d+$`)
-	if !pattern.MatchString(id) {
-		t.Errorf("GenerateTraceID() = %q, 不匹配格式 timestamp-pid", id)
 	}
 }

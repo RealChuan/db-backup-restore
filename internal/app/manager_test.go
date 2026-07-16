@@ -34,28 +34,28 @@ func (f *fakeDriver) ListDatabases(_ context.Context) ([]string, error) {
 }
 
 // 以下方法为满足 DatabaseBackup 接口而存在，测试中不使用
-func (f *fakeDriver) Backup(ctx context.Context, _ backup.BackupOptions, _ backup.ProgressCallback) (*backup.BackupResult, error) {
-	return nil, backup.NewNotSupportedError(ctx, "Backup", f.GetConfig().Type)
+func (f *fakeDriver) Backup(_ context.Context, _ backup.BackupOptions, _ backup.ProgressCallback) (*backup.BackupResult, error) {
+	return nil, backup.NewNotSupportedError("Backup", f.GetConfig().Type)
 }
 
-func (f *fakeDriver) Restore(ctx context.Context, _ backup.RestoreOptions, _ backup.ProgressCallback) (*backup.RestoreResult, error) {
-	return nil, backup.NewNotSupportedError(ctx, "Restore", f.GetConfig().Type)
+func (f *fakeDriver) Restore(_ context.Context, _ backup.RestoreOptions, _ backup.ProgressCallback) (*backup.RestoreResult, error) {
+	return nil, backup.NewNotSupportedError("Restore", f.GetConfig().Type)
 }
 
-func (f *fakeDriver) ListBackups(ctx context.Context, _ ...backup.BackupOptions) ([]backup.BackupInfo, error) {
-	return nil, backup.NewNotSupportedError(ctx, "ListBackups", f.GetConfig().Type)
+func (f *fakeDriver) ListBackups(_ context.Context, _ ...backup.BackupOptions) ([]backup.BackupInfo, error) {
+	return nil, backup.NewNotSupportedError("ListBackups", f.GetConfig().Type)
 }
 
-func (f *fakeDriver) DeleteBackup(ctx context.Context, _ string, _ ...backup.BackupOptions) error {
-	return backup.NewNotSupportedError(ctx, "DeleteBackup", f.GetConfig().Type)
+func (f *fakeDriver) DeleteBackup(_ context.Context, _ string, _ ...backup.BackupOptions) error {
+	return backup.NewNotSupportedError("DeleteBackup", f.GetConfig().Type)
 }
 
-func (f *fakeDriver) GetBackupInfo(ctx context.Context, _ string, _ ...backup.BackupOptions) (map[string]string, error) {
-	return nil, backup.NewNotSupportedError(ctx, "GetBackupInfo", f.GetConfig().Type)
+func (f *fakeDriver) GetBackupInfo(_ context.Context, _ string, _ ...backup.BackupOptions) (map[string]string, error) {
+	return nil, backup.NewNotSupportedError("GetBackupInfo", f.GetConfig().Type)
 }
 
-func (f *fakeDriver) DeleteAllBackups(ctx context.Context, _ ...backup.BackupOptions) error {
-	return backup.NewNotSupportedError(ctx, "DeleteAllBackups", f.GetConfig().Type)
+func (f *fakeDriver) DeleteAllBackups(_ context.Context, _ ...backup.BackupOptions) error {
+	return backup.NewNotSupportedError("DeleteAllBackups", f.GetConfig().Type)
 }
 
 const fakeDriverName = "fake-test-driver"
@@ -117,7 +117,7 @@ func TestManagerApp_ListDatabases_NotSupported(t *testing.T) {
 		Version:     "test",
 		Description: "fake driver returning not-supported",
 	}, func(cfg *backup.DBConfig) (backup.DatabaseBackup, error) {
-		listErr := backup.NewNotSupportedError(context.Background(), "ListDatabases", cfg.Type)
+		listErr := backup.NewNotSupportedError("ListDatabases", cfg.Type)
 		return newFakeDriver(cfg, nil, listErr), nil
 	}); err != nil {
 		t.Fatalf("注册驱动失败: %v", err)

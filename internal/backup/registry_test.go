@@ -19,28 +19,28 @@ func newStubDriver(cfg *DBConfig) (DatabaseBackup, error) {
 	return &stubDriver{BaseBackup: NewBaseBackup(cfg)}, nil
 }
 
-func (s *stubDriver) Backup(ctx context.Context, _ BackupOptions, _ ProgressCallback) (*BackupResult, error) {
-	return nil, NewNotSupportedError(ctx, "Backup", s.GetConfig().Type)
+func (s *stubDriver) Backup(_ context.Context, _ BackupOptions, _ ProgressCallback) (*BackupResult, error) {
+	return nil, NewNotSupportedError("Backup", s.GetConfig().Type)
 }
 
-func (s *stubDriver) Restore(ctx context.Context, _ RestoreOptions, _ ProgressCallback) (*RestoreResult, error) {
-	return nil, NewNotSupportedError(ctx, "Restore", s.GetConfig().Type)
+func (s *stubDriver) Restore(_ context.Context, _ RestoreOptions, _ ProgressCallback) (*RestoreResult, error) {
+	return nil, NewNotSupportedError("Restore", s.GetConfig().Type)
 }
 
-func (s *stubDriver) ListBackups(ctx context.Context, _ ...BackupOptions) ([]BackupInfo, error) {
-	return nil, NewNotSupportedError(ctx, "ListBackups", s.GetConfig().Type)
+func (s *stubDriver) ListBackups(_ context.Context, _ ...BackupOptions) ([]BackupInfo, error) {
+	return nil, NewNotSupportedError("ListBackups", s.GetConfig().Type)
 }
 
-func (s *stubDriver) DeleteBackup(ctx context.Context, _ string, _ ...BackupOptions) error {
-	return NewNotSupportedError(ctx, "DeleteBackup", s.GetConfig().Type)
+func (s *stubDriver) DeleteBackup(_ context.Context, _ string, _ ...BackupOptions) error {
+	return NewNotSupportedError("DeleteBackup", s.GetConfig().Type)
 }
 
-func (s *stubDriver) GetBackupInfo(ctx context.Context, _ string, _ ...BackupOptions) (map[string]string, error) {
-	return nil, NewNotSupportedError(ctx, "GetBackupInfo", s.GetConfig().Type)
+func (s *stubDriver) GetBackupInfo(_ context.Context, _ string, _ ...BackupOptions) (map[string]string, error) {
+	return nil, NewNotSupportedError("GetBackupInfo", s.GetConfig().Type)
 }
 
-func (s *stubDriver) DeleteAllBackups(ctx context.Context, _ ...BackupOptions) error {
-	return NewNotSupportedError(ctx, "DeleteAllBackups", s.GetConfig().Type)
+func (s *stubDriver) DeleteAllBackups(_ context.Context, _ ...BackupOptions) error {
+	return NewNotSupportedError("DeleteAllBackups", s.GetConfig().Type)
 }
 
 // stubFactory 返回固定的工厂函数，用于注册测试驱动

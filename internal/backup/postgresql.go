@@ -76,7 +76,7 @@ func NewPostgreSQLBackup(config *DBConfig) (*PostgreSQLBackup, error) {
 
 func (p *PostgreSQLBackup) Backup(ctx context.Context, opts BackupOptions, callback ProgressCallback) (*BackupResult, error) {
 	if opts.Mode == BackupModeIncremental || opts.Mode == BackupModeDifferential {
-		return nil, NewNotSupportedError(ctx, "backup", "postgresql")
+		return nil, NewNotSupportedError("backup", "postgresql")
 	}
 
 	backupDir := opts.TargetPath

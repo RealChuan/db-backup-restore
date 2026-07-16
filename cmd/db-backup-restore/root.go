@@ -3,7 +3,6 @@ package main
 import (
 	"errors"
 	"fmt"
-	"os"
 	"sync"
 
 	"github.com/spf13/cobra"
@@ -107,7 +106,9 @@ var rootCmd = &cobra.Command{
 	},
 }
 
-func Execute() {
+func Execute() int {
+	defer logging.Close()
+
 	rootCmd.SilenceErrors = true
 	rootCmd.SilenceUsage = true
 	SetupCommandErrorHandling(rootCmd)
@@ -117,8 +118,9 @@ func Execute() {
 			writer := app.NewOutputWriter(currentFormat())
 			_ = writer.Write(&app.OperationResult{Success: false, Error: err.Error()})
 		}
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
 
 func runValidateConfig() error {

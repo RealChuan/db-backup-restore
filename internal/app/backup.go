@@ -9,6 +9,7 @@ import (
 	"github.com/RealChuan/db-backup-restore/internal/backup"
 	"github.com/RealChuan/db-backup-restore/internal/config"
 	"github.com/RealChuan/db-backup-restore/internal/logging"
+	"github.com/RealChuan/db-backup-restore/pkg/fileutil"
 )
 
 // BackupOptions 备份应用层的选项参数。
@@ -89,7 +90,7 @@ func (a *BackupApp) Run(ctx context.Context, dbType string, opts BackupOptions) 
 
 	data := map[string]interface{}{
 		DataKeyFile:     result.BackupFile,
-		DataKeySize:     FormatFileSize(result.BackupSize),
+		DataKeySize:     fileutil.FormatFileSize(result.BackupSize),
 		DataKeyDuration: result.Duration.String(),
 	}
 	if result.Metadata["backup_set_key"] != "" {

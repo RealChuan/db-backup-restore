@@ -2,63 +2,6 @@ package backup
 
 import "context"
 
-// Backuper 备份执行接口
-type Backuper interface {
-	Backup(ctx context.Context, opts BackupOptions, callback ProgressCallback) (*BackupResult, error)
-}
-
-// Restorer 还原执行接口
-type Restorer interface {
-	Restore(ctx context.Context, opts RestoreOptions, callback ProgressCallback) (*RestoreResult, error)
-}
-
-// BackupLister 备份列表查询接口
-type BackupLister interface {
-	ListBackups(ctx context.Context, opts ...BackupOptions) ([]BackupInfo, error)
-}
-
-// BackupDeleter 备份删除接口
-type BackupDeleter interface {
-	DeleteBackup(ctx context.Context, identifier string, opts ...BackupOptions) error
-}
-
-// BackupInfoGetter 备份信息查询接口
-type BackupInfoGetter interface {
-	GetBackupInfo(ctx context.Context, backupID string, opts ...BackupOptions) (map[string]string, error)
-}
-
-// BackupValidator 备份验证接口
-type BackupValidator interface {
-	ValidateBackup(ctx context.Context, backupID string, opts ...BackupOptions) error
-}
-
-// BackupRegistry 备份注册接口
-type BackupRegistry interface {
-	RegisterBackup(ctx context.Context, backupPath string) error
-	UnregisterBackup(ctx context.Context, backupID string) error
-}
-
-// BackupStatusVerifier 备份状态验证接口
-type BackupStatusVerifier interface {
-	VerifyBackupStatus(ctx context.Context) error
-	DeleteInvalidBackups(ctx context.Context, opts ...BackupOptions) error
-}
-
-// AllBackupDeleter 全量删除接口
-type AllBackupDeleter interface {
-	DeleteAllBackups(ctx context.Context, opts ...BackupOptions) error
-}
-
-// Closer 资源释放接口
-type Closer interface {
-	Close() error
-}
-
-// DatabaseLister 数据库列表查询接口
-type DatabaseLister interface {
-	ListDatabases(ctx context.Context) ([]string, error)
-}
-
 // ArchiveModeManager 归档模式管理接口（仅 Oracle 和达梦支持）
 type ArchiveModeManager interface {
 	EnableArchiveLogMode(ctx context.Context, archiveDest string) error
@@ -67,15 +10,30 @@ type ArchiveModeManager interface {
 
 // DatabaseBackup 完整的数据库备份管理接口
 type DatabaseBackup interface {
-	Backuper
-	Restorer
-	BackupLister
-	BackupDeleter
-	BackupInfoGetter
-	BackupValidator
-	BackupRegistry
-	BackupStatusVerifier
-	AllBackupDeleter
-	DatabaseLister
-	Closer
+	// Backup 执行备份
+	Backup(ctx context.Context, opts BackupOptions, callback ProgressCallback) (*BackupResult, error)
+	// Restore 执行还原
+	Restore(ctx context.Context, opts RestoreOptions, callback ProgressCallback) (*RestoreResult, error)
+	// ListBackups 列出所有备份
+	ListBackups(ctx context.Context, opts ...BackupOptions) ([]BackupInfo, error)
+	// DeleteBackup 删除指定备份
+	DeleteBackup(ctx context.Context, identifier string, opts ...BackupOptions) error
+	// GetBackupInfo 获取备份详细信息
+	GetBackupInfo(ctx context.Context, backupID string, opts ...BackupOptions) (map[string]string, error)
+	// ValidateBackup 验证备份
+	ValidateBackup(ctx context.Context, backupID string, opts ...BackupOptions) error
+	// RegisterBackup 注册备份
+	RegisterBackup(ctx context.Context, backupPath string) error
+	// UnregisterBackup 注销备份
+	UnregisterBackup(ctx context.Context, backupID string) error
+	// VerifyBackupStatus 验证备份状态
+	VerifyBackupStatus(ctx context.Context) error
+	// DeleteInvalidBackups 删除无效备份
+	DeleteInvalidBackups(ctx context.Context, opts ...BackupOptions) error
+	// DeleteAllBackups 删除所有备份
+	DeleteAllBackups(ctx context.Context, opts ...BackupOptions) error
+	// ListDatabases 列出所有数据库
+	ListDatabases(ctx context.Context) ([]string, error)
+	// Close 释放资源
+	Close() error
 }

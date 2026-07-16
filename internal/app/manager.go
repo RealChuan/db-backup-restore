@@ -508,11 +508,6 @@ func (m *ManagerApp) ValidateConfig() (*OperationResult, error) {
 	}, nil
 }
 
-// FormatFileSize 格式化文件大小为人类可读字符串。
-func FormatFileSize(size int64) string {
-	return fileutil.FormatFileSize(size)
-}
-
 // confirmAction 请求用户确认操作。
 func confirmAction(message string) bool {
 	reader := bufio.NewReader(os.Stdin)
@@ -595,7 +590,7 @@ func backupInfoToMap(b backup.BackupInfo) map[string]interface{} {
 		m["mode"] = b.BackupMode
 	}
 	if b.Size > 0 {
-		m[DataKeySize] = FormatFileSize(b.Size)
+		m[DataKeySize] = fileutil.FormatFileSize(b.Size)
 	}
 	if b.Status != "" {
 		m["status"] = b.Status
